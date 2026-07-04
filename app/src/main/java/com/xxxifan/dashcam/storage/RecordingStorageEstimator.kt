@@ -102,7 +102,7 @@ object RecordingStorageEstimator {
                 entry.sizeBytes > 0L &&
                 entry.resolution == settings.resolution &&
                 entry.frameRate == settings.frameRate &&
-                entry.codec == settings.codec &&
+                (entry.codec == settings.codec || settings.codec == "auto") &&
                 entry.dynamicRange == settings.dynamicRange
         }
         val matchingDurationMillis = matchingEntries.sumOf { it.durationMillis }
@@ -121,9 +121,9 @@ object RecordingStorageEstimator {
 
     private fun heuristicBytesPerSecond(settings: RecordingSettings): Long {
         val baseMbps = when (settings.resolution) {
-            "720p" -> 5.0
-            "4K" -> 35.0
-            else -> 10.0
+            "720p" -> 12.0
+            "4K" -> 80.0
+            else -> 25.0
         }
         val fpsMultiplier = when {
             settings.frameRate >= 60 -> 1.7
@@ -132,6 +132,7 @@ object RecordingStorageEstimator {
         }
         val codecMultiplier = when (settings.codec) {
             "h265" -> 0.72
+            "auto" -> 0.9
             else -> 1.0
         }
         val dynamicRangeMultiplier = if (settings.dynamicRange == "sdr") 1.0 else 1.2
