@@ -13,6 +13,8 @@ import androidx.lifecycle.LifecycleOwner
 import com.xxxifan.dashcam.data.RecordingSettings
 
 object PreviewController {
+    private var boundPreview: Preview? = null
+
     fun bind(
         context: Context,
         lifecycleOwner: LifecycleOwner,
@@ -35,18 +37,22 @@ object PreviewController {
                 }
                 runCatching {
                     provider.unbindAll()
+                    val preview = buildPreview(previewView, settings, usePhysicalCamera = true)
                     provider.bindToLifecycle(
                         lifecycleOwner,
                         selector,
-                        buildPreview(previewView, settings, usePhysicalCamera = true),
+                        preview,
                     )
+                    boundPreview = preview
                 }.onFailure {
                     provider.unbindAll()
+                    val preview = buildPreview(previewView, settings, usePhysicalCamera = false)
                     provider.bindToLifecycle(
                         lifecycleOwner,
                         CameraSelector.DEFAULT_BACK_CAMERA,
-                        buildPreview(previewView, settings, usePhysicalCamera = false),
+                        preview,
                     )
+                    boundPreview = preview
                 }
             },
             ContextCompat.getMainExecutor(context),
@@ -55,7 +61,9 @@ object PreviewController {
 
     fun unbind(context: Context) {
         runCatching {
-            ProcessCameraProvider.getInstance(context).get().unbindAll()
+            val preview = boundPreview ?: return@runCatching
+            ProcessCameraProvider.getInstance(context).get().unbind(preview)
+            boundPreview = null
         }
     }
 
