@@ -1,0 +1,65 @@
+package com.xxxifan.dashcam.data
+
+import com.tencent.mmkv.MMKV
+
+class RecordingSettingsStore(
+    private val mmkv: MMKV = MMKV.mmkvWithID("settings"),
+) {
+    fun get(): RecordingSettings = RecordingSettings(
+        segmentMinutes = mmkv.decodeInt(KEY_SEGMENT_MINUTES, 2),
+        audioEnabled = mmkv.decodeBool(KEY_AUDIO_ENABLED, true),
+        resolution = mmkv.decodeString(KEY_RESOLUTION, "1080p") ?: "1080p",
+        frameRate = mmkv.decodeInt(KEY_FRAME_RATE, 30),
+        codec = mmkv.decodeString(KEY_CODEC, "auto") ?: "auto",
+        dynamicRange = mmkv.decodeString(KEY_DYNAMIC_RANGE, "sdr") ?: "sdr",
+        stabilizationMode = decodeStabilization(),
+        cameraId = mmkv.decodeString(KEY_CAMERA_ID, "") ?: "",
+        cameraLabel = mmkv.decodeString(KEY_CAMERA_LABEL, "1X 主镜头") ?: "1X 主镜头",
+        autoDowngradeEnabled = mmkv.decodeBool(KEY_AUTO_DOWNGRADE, true),
+        reservePercent = mmkv.decodeInt(KEY_RESERVE_PERCENT, 10),
+        loopQuotaBytes = mmkv.decodeLong(KEY_LOOP_QUOTA_BYTES, 0L).takeIf { it > 0L },
+    )
+
+    fun update(update: (RecordingSettings) -> RecordingSettings): RecordingSettings {
+        val next = update(get())
+        save(next)
+        return next
+    }
+
+    fun save(settings: RecordingSettings) {
+        mmkv.encode(KEY_SEGMENT_MINUTES, settings.segmentMinutes)
+        mmkv.encode(KEY_AUDIO_ENABLED, settings.audioEnabled)
+        mmkv.encode(KEY_RESOLUTION, settings.resolution)
+        mmkv.encode(KEY_FRAME_RATE, settings.frameRate)
+        mmkv.encode(KEY_CODEC, settings.codec)
+        mmkv.encode(KEY_DYNAMIC_RANGE, settings.dynamicRange)
+        mmkv.encode(KEY_STABILIZATION, settings.stabilizationMode.name)
+        mmkv.encode(KEY_CAMERA_ID, settings.cameraId)
+        mmkv.encode(KEY_CAMERA_LABEL, settings.cameraLabel)
+        mmkv.encode(KEY_AUTO_DOWNGRADE, settings.autoDowngradeEnabled)
+        mmkv.encode(KEY_RESERVE_PERCENT, settings.reservePercent)
+        mmkv.encode(KEY_LOOP_QUOTA_BYTES, settings.loopQuotaBytes ?: 0L)
+    }
+
+    private fun decodeStabilization(): StabilizationMode {
+        val name = mmkv.decodeString(KEY_STABILIZATION, StabilizationMode.Standard.name)
+        return runCatching {
+            StabilizationMode.valueOf(name ?: StabilizationMode.Standard.name)
+        }.getOrDefault(StabilizationMode.Standard)
+    }
+
+    private companion object {
+        const val KEY_SEGMENT_MINUTES = "segment_minutes"
+        const val KEY_AUDIO_ENABLED = "audio_enabled"
+        const val KEY_RESOLUTION = "resolution"
+        const val KEY_FRAME_RATE = "frame_rate"
+        const val KEY_CODEC = "codec"
+        const val KEY_DYNAMIC_RANGE = "dynamic_range"
+        const val KEY_STABILIZATION = "stabilization"
+        const val KEY_CAMERA_ID = "camera_id"
+        const val KEY_CAMERA_LABEL = "camera_label"
+        const val KEY_AUTO_DOWNGRADE = "auto_downgrade"
+        const val KEY_RESERVE_PERCENT = "reserve_percent"
+        const val KEY_LOOP_QUOTA_BYTES = "loop_quota_bytes"
+    }
+}
