@@ -319,8 +319,17 @@ Metadata per segment:
 - Stabilization mode.
 - Audio enabled.
 - Safety downgrade state, if any.
+- Segment state: `RECORDING`, `FINALIZING`, `READY`, or `FAILED`.
 - Locked/protected flag reserved for after v1.
 - Exported flag.
+
+Segment state behavior:
+
+- `RECORDING`: current file is still being written. It must not be treated as a normal library item.
+- `FINALIZING`: CameraX or the encoder is closing and validating the file. It remains read-only until finalization succeeds or fails.
+- `READY`: recording is complete, metadata is valid, and normal playback/delete/export/share operations are allowed.
+- `FAILED`: recording did not produce a valid segment. Show a clear state and allow safe cleanup only.
+- Thumbnail generation, duration probing, playback, export, share, delete, loop deletion, and multi-select must only operate on `READY` segments unless a future feature explicitly defines another safe path.
 
 ## Loop Recording
 
@@ -417,6 +426,10 @@ Library should support:
 
 - Reverse chronological ordering.
 - Date grouping with sticky headers.
+- A read-only active-recording status row when recording is in progress.
+- The active status row should show `Recording`/`Finalizing` state and live elapsed time from `RecordingService`, not from repeatedly probing the partially written media file.
+- The unfinished current segment must not appear as a normal recording item before it becomes `READY`.
+- `RECORDING` and `FINALIZING` segments must not allow playback, delete, export, share, or multi-select actions.
 - File duration, size, and quality.
 - Playback.
 - Delete.
@@ -603,6 +616,8 @@ Status: Partial.
 
 - [x] Implement recording list in reverse chronological order.
 - [x] Add date sticky headers.
+- [ ] Show the current active segment as a read-only recording status row instead of a normal library item.
+- [ ] Exclude `RECORDING` and `FINALIZING` segments from playback, delete, export, share, loop deletion, and multi-select paths.
 - [x] Implement playback preview with Media3/ExoPlayer.
 - [x] Implement delete with confirmation.
 - [x] Do not implement lock/protect in v1.
@@ -655,6 +670,8 @@ Current anchors:
 - [x] Old deletable recordings are deleted before stopping for storage pressure.
 - [x] Lock/protect behavior is intentionally deferred after v1.
 - [x] Default recordings do not appear in gallery apps.
+- [ ] The unfinished active segment is never exposed as a normal library item; it may appear only as a read-only live status row.
+- [ ] Playback, delete, export, share, loop deletion, and multi-select ignore `RECORDING` and `FINALIZING` segments.
 - [ ] Exported recordings appear in user-visible media storage.
 - [x] Sharing works through Android share sheet.
 - [ ] Safety monitor can notify about thermal, battery, and storage pressure.
@@ -692,6 +709,8 @@ Current anchors:
 16. Default stabilization: standard.
 17. Stabilization choices: expose off, standard, and enhanced/active where supported.
 18. Recording library: reverse chronological list with date sticky headers.
+19. Active recording visibility: show the unfinished current segment only as a read-only live status row, never as a normal library item.
+20. Segment operations: playback, delete, export, share, loop deletion, and multi-select are allowed only for `READY` segments.
 
 ## Details To Confirm Before Implementation
 
