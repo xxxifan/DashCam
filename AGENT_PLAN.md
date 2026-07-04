@@ -465,99 +465,203 @@ Recording:
 
 ## Implementation Phases
 
+Checklist legend:
+
+- `[x]`: implemented or verified in the current codebase.
+- `[~]`: partially implemented; follow-up work remains.
+- `[ ]`: not implemented yet.
+- `[deferred]`: intentionally deferred by product decision.
+
 ### Phase 0: Project Setup
 
-- Create Android project.
-- Configure Kotlin, Compose, CameraX, MMKV, Media3, and FileProvider.
-- Use package name `com.xxxifan.dashcam`.
-- Use app display name `DashCam`.
-- Set minimum SDK to Android 16 / API 36 for the Pixel 10a baseline.
-- Add manifest permissions and foreground service declarations.
-- Add formatter configuration.
-- Add initial package/module structure.
+Status: Mostly done.
+
+- [x] Create Android project.
+- [x] Configure Kotlin, Compose, CameraX, MMKV, Media3, and FileProvider.
+- [x] Use package name `com.xxxifan.dashcam`.
+- [x] Use app display name `DashCam`.
+- [x] Set minimum SDK to Android 16 / API 36 for the Pixel 10a baseline.
+- [x] Add manifest permissions and foreground service declarations.
+- [~] Add formatter configuration.
+  - Current state: project follows Kotlin/Gradle formatting conventions, but no dedicated formatter task/config is documented yet.
+- [x] Add initial package/module structure.
+
+Current anchors:
+
+- `app/build.gradle.kts`
+- `app/src/main/AndroidManifest.xml`
+- `app/src/main/java/com/xxxifan/dashcam/DashCamApplication.kt`
 
 ### Phase 1: Basic Recording
 
-- Implement foreground `RecordingService`.
-- Implement CameraX video recording to app-specific files.
-- Implement start/stop from UI.
-- Show a pre-recording confirmation dialog before starting capture.
-- Implement basic notification.
-- Verify one segment can be recorded and played back.
+Status: Mostly done.
+
+- [x] Implement foreground `RecordingService`.
+- [x] Implement CameraX video recording to app-specific files.
+- [x] Implement start/stop from UI.
+- [x] Show a pre-recording confirmation dialog before starting capture.
+- [x] Implement basic notification.
+- [~] Verify one segment can be recorded and played back.
+  - Current state: short device tests have produced video files and playback UI exists.
+  - Remaining: repeat after each major recording pipeline change and document the tested setting combination.
+
+Current anchors:
+
+- `app/src/main/java/com/xxxifan/dashcam/recording/RecordingService.kt`
+- `app/src/main/java/com/xxxifan/dashcam/recording/RecordingState.kt`
+- `app/src/main/java/com/xxxifan/dashcam/MainActivity.kt`
 
 ### Phase 2: Segment Rotation And Loop Storage
 
-- Implement segment duration with 2 minutes as the default.
-- Implement automatic stop/start segment rotation.
-- Implement metadata persistence.
-- Implement hidden recording folder and `.nomedia`.
-- Implement quota cleanup of oldest deletable recordings.
-- Implement 10% storage reserve.
-- Implement quota picker from 2GB to available space after reserve.
-- Implement startup quality fallback when recording space is too low for high-quality profiles.
+Status: Mostly done.
+
+- [x] Implement segment duration with 2 minutes as the default.
+- [x] Implement automatic stop/start segment rotation.
+- [x] Implement metadata persistence.
+- [x] Implement hidden recording folder and `.nomedia`.
+- [x] Implement quota cleanup of oldest deletable recordings.
+- [x] Implement 10% storage reserve.
+- [x] Implement quota picker from 2GB to available space after reserve.
+- [x] Estimate remaining recording space and recordable time from live stats, historical files, or selected profile heuristics.
+- [x] Estimate next segment size from selected resolution/fps/codec/HDR/audio and segment duration before loop cleanup.
+- [ ] Implement startup quality fallback when recording space is too low for high-quality profiles.
+  - Desired behavior: disable or lower high-resolution/high-quality settings, try the lowest viable profile, then show a storage-insufficient error if still unsafe.
+
+Current anchors:
+
+- `app/src/main/java/com/xxxifan/dashcam/storage/LoopStorageManager.kt`
+- `app/src/main/java/com/xxxifan/dashcam/storage/RecordingStorageEstimator.kt`
+- `app/src/main/java/com/xxxifan/dashcam/data/RecordingRepository.kt`
+- `app/src/main/java/com/xxxifan/dashcam/data/RecordingSettingsStore.kt`
 
 ### Phase 3: Lock-Screen And Black-Screen Modes
 
-- Verify foreground-started lock-screen recording path.
-- Add black-screen low-brightness mode.
-- Add UI toggle between preview and black-screen mode.
-- Add fallback handling when lock-screen recording fails or is unstable.
+Status: Partial, with black-screen UI currently deferred.
+
+- [~] Verify foreground-started lock-screen recording path.
+  - Current state: user-started foreground service can continue recording after screen lock in current Pixel test.
+  - Known issue: face unlock/front-camera activity can temporarily interrupt camera access, but recording may recover.
+  - Remaining: document exact lock-screen test matrix and retest with selected lens/fps/stabilization combinations.
+- [deferred] Add black-screen low-brightness mode.
+  - Product update: black-screen button was removed while lock-screen recording appears viable.
+  - Keep this as a future fallback if lock-screen recording proves unstable.
+- [deferred] Add UI toggle between preview and black-screen mode.
+- [ ] Add fallback handling when lock-screen recording fails or is unstable.
+  - Desired behavior: detect repeated lock-screen camera interruption or service failure and guide user to fallback mode.
+
+Current anchors:
+
+- `app/src/main/java/com/xxxifan/dashcam/MainActivity.kt`
+- `app/src/main/java/com/xxxifan/dashcam/camera/PreviewController.kt`
+- `app/src/main/java/com/xxxifan/dashcam/recording/RecordingService.kt`
 
 ### Phase 4: Settings And Capability Query
 
-- Implement runtime capability query.
-- Populate only supported resolution/fps/codec/stabilization options.
-- Apply selected settings to new recordings.
-- Handle unsupported combinations gracefully.
+Status: Mostly done.
+
+- [x] Implement runtime capability query.
+- [x] Populate supported resolution/fps/codec/stabilization options.
+- [x] Populate supported HDR/dynamic range options.
+- [x] Populate back lens options and expose lens selection only in settings.
+- [x] Apply selected settings to new recordings.
+- [~] Handle unsupported combinations gracefully.
+  - Current state: saved settings are coerced to runtime capabilities and CameraX fallback quality strategy is used.
+  - Remaining: validate cross-feature combinations such as physical ultra-wide + 4K/60fps + enhanced stabilization, and downgrade/disable invalid combinations before recording.
+
+Current anchors:
+
+- `app/src/main/java/com/xxxifan/dashcam/camera/CameraCapabilitiesRepository.kt`
+- `app/src/main/java/com/xxxifan/dashcam/camera/CameraOption.kt`
+- `app/src/main/java/com/xxxifan/dashcam/camera/PreviewController.kt`
+- `app/src/main/java/com/xxxifan/dashcam/MainActivity.kt`
 
 ### Phase 5: Health Monitoring And Safety Policy
 
-- Implement thermal, battery, storage, and recording pipeline monitors.
-- Implement `RecordingHealthSnapshot`.
-- Implement public `RecordingSafetyPolicy`.
-- Implement safety decisions and event sinks.
-- Implement auto-downgrade setting.
-- Implement emergency stop behavior.
+Status: Partial skeleton.
+
+- [ ] Implement thermal, battery, storage, and recording pipeline monitors.
+- [x] Implement `RecordingHealthSnapshot`.
+- [x] Implement public `RecordingSafetyPolicy`.
+- [x] Implement safety decision model and `RecordingSafetyEventSink` interface.
+- [~] Implement auto-downgrade setting.
+  - Current state: setting exists and is persisted.
+  - Remaining: connect setting to health monitoring and active recording quality changes.
+- [ ] Implement emergency stop behavior driven by safety decisions.
+- [ ] Stream safety decisions to UI/notification/log sinks.
+- [ ] Keep `RecordingSafetyPolicy` independent from future voice/TTS/sound/vibration sinks.
+  - Current state: interface boundary supports this; integration must preserve it.
+
+Current anchors:
+
+- `app/src/main/java/com/xxxifan/dashcam/safety/RecordingSafetyPolicy.kt`
+- `app/src/main/java/com/xxxifan/dashcam/data/RecordingSettingsStore.kt`
+- `app/src/main/java/com/xxxifan/dashcam/recording/RecordingService.kt`
 
 ### Phase 6: Recording Library, Export, Share
 
-- Implement recording list in reverse chronological order.
-- Add date sticky headers.
-- Implement playback/detail screen.
-- Implement delete.
-- Do not implement lock/protect in v1.
-- Implement export to MediaStore.
-- Implement share via FileProvider.
-- Add clipping/editing placeholder entry.
+Status: Partial.
+
+- [x] Implement recording list in reverse chronological order.
+- [x] Add date sticky headers.
+- [x] Implement playback preview with Media3/ExoPlayer.
+- [x] Implement delete with confirmation.
+- [x] Do not implement lock/protect in v1.
+- [ ] Implement export to MediaStore.
+  - Current state: export action opens a chooser with a private FileProvider URI.
+  - Required next step: copy selected recording into user-visible `Movies/DashCam` via MediaStore and update exported metadata.
+- [x] Implement share via FileProvider.
+- [ ] Add clipping/editing placeholder entry.
+- [ ] Add richer playback/detail screen if separate detail view is desired beyond the current preview dialog.
+
+Current anchors:
+
+- `app/src/main/java/com/xxxifan/dashcam/MainActivity.kt`
+- `app/src/main/java/com/xxxifan/dashcam/data/RecordingRepository.kt`
+- `app/src/main/res/xml/file_paths.xml`
 
 ### Phase 7: Pixel 10a Tuning And Long-Run Testing
 
-- Test lock-screen recording.
-- Test black-screen fallback.
-- Test 4K/1080p, 60fps/30fps, H.264/H.265.
-- Test stabilization modes.
-- Test thermal downgrade behavior.
-- Test low storage and loop deletion behavior.
-- Test low battery behavior.
-- Test 30-minute and longer continuous recording.
+Status: Pending / ongoing device validation.
+
+- [~] Test lock-screen recording.
+  - Current state: short manual lock-screen test passed; more combinations remain.
+- [deferred] Test black-screen fallback.
+  - Deferred until black-screen fallback is reintroduced.
+- [ ] Test 4K/1080p, 60fps/30fps, H.264/H.265.
+- [~] Test stabilization modes.
+  - Current state: off/standard/enhanced are exposed when supported and applied through Camera2 interop.
+  - Remaining: verify actual output stability and compatibility per mode.
+- [ ] Test thermal downgrade behavior.
+- [ ] Test low storage and loop deletion behavior.
+- [ ] Test low battery behavior.
+- [ ] Test 30-minute and longer continuous recording.
+
+Current anchors:
+
+- Use connected Pixel target with `adb`.
+- Record tested app version, settings, elapsed duration, segment count, and failures in this document or a dedicated test log.
 
 ## Acceptance Criteria
 
-- User can start recording from foreground UI.
-- Foreground notification remains visible while recording.
-- Locking the screen after starting recording continues writing valid video segments.
-- Black-screen lowest-brightness mode works as fallback.
-- Segment rotation produces playable files.
-- Loop recording respects configured storage quota.
-- Old deletable recordings are deleted before stopping for storage pressure.
-- Lock/protect behavior is intentionally deferred after v1.
-- Default recordings do not appear in gallery apps.
-- Exported recordings appear in user-visible media storage.
-- Sharing works through Android share sheet.
-- Safety monitor can notify about thermal, battery, and storage pressure.
-- Auto-downgrade setting changes behavior under pressure.
-- Emergency thermal/storage/battery conditions stop recording even when auto-downgrade is disabled.
-- `RecordingSafetyPolicy` remains reusable by future TTS/sound/vibration event sinks.
+- [x] User can start recording from foreground UI.
+- [x] Foreground notification remains visible while recording.
+- [~] Locking the screen after starting recording continues writing valid video segments.
+  - Short test passed; long-run and feature-combination tests remain.
+- [deferred] Black-screen lowest-brightness mode works as fallback.
+- [~] Segment rotation produces playable files.
+  - Current state: implemented; needs repeated device validation after rotation fixes.
+- [~] Loop recording respects configured storage quota.
+  - Current state: quota enforcement and oldest-delete cleanup are implemented; low-storage stress test remains.
+- [x] Old deletable recordings are deleted before stopping for storage pressure.
+- [x] Lock/protect behavior is intentionally deferred after v1.
+- [x] Default recordings do not appear in gallery apps.
+- [ ] Exported recordings appear in user-visible media storage.
+- [x] Sharing works through Android share sheet.
+- [ ] Safety monitor can notify about thermal, battery, and storage pressure.
+- [ ] Auto-downgrade setting changes behavior under pressure.
+- [ ] Emergency thermal/storage/battery conditions stop recording even when auto-downgrade is disabled.
+- [~] `RecordingSafetyPolicy` remains reusable by future TTS/sound/vibration event sinks.
+  - Interface boundary exists; service integration must preserve the decoupling.
 
 ## Known Risks
 
