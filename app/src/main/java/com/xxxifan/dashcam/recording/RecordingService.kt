@@ -40,6 +40,7 @@ import com.xxxifan.dashcam.R
 import com.xxxifan.dashcam.camera.CameraCapabilities
 import com.xxxifan.dashcam.camera.CameraCapabilitiesRepository
 import com.xxxifan.dashcam.camera.CameraSelectionId
+import com.xxxifan.dashcam.camera.codecLabel
 import com.xxxifan.dashcam.camera.toCameraXDynamicRange
 import com.xxxifan.dashcam.camera.toVideoMimeType
 import com.xxxifan.dashcam.data.BitratePreset
@@ -51,6 +52,7 @@ import com.xxxifan.dashcam.data.RecordingSettings
 import com.xxxifan.dashcam.data.RecordingSettingsStore
 import com.xxxifan.dashcam.data.RecordingThumbnailManager
 import com.xxxifan.dashcam.data.StabilizationMode
+import com.xxxifan.dashcam.data.coerceCropZoomRatio
 import com.xxxifan.dashcam.safety.DefaultRecordingSafetyPolicy
 import com.xxxifan.dashcam.safety.RecordingHealthSnapshot
 import com.xxxifan.dashcam.safety.RecordingSafetyDecision
@@ -201,7 +203,7 @@ class RecordingService : LifecycleService() {
         val startupSettings = resolveStartupSettings(
             requested = resolvedSettings,
             capabilities = capabilities,
-            autoResolved = requestedSettings.bitratePreset == BitratePreset.Auto,
+            autoResolved = requestedSettings.autoQualityEnabled,
         )
         if (startupSettings == null) {
             stopWithMessage(
@@ -260,7 +262,7 @@ class RecordingService : LifecycleService() {
         autoResolved: Boolean,
     ): StartupSettings? {
         val autoMessage = if (autoResolved) {
-            "自动质量已选择 ${requested.resolution}${requested.frameRate}fps ${requested.bitratePreset.label()}。"
+            "自动画质已选择 ${requested.resolution}${requested.frameRate}fps ${requested.codec.codecLabel()} ${requested.bitratePreset.label()}。"
         } else {
             null
         }
@@ -416,6 +418,7 @@ class RecordingService : LifecycleService() {
                 stabilizationMode = segment.settings.stabilizationMode,
                 cameraId = segment.settings.cameraId,
                 cameraLabel = segment.settings.cameraLabel,
+                cropZoomRatio = segment.settings.cropZoomRatio,
             )
             recordingRepository.add(entry)
             eventLogger.logRecordingSettings(
@@ -703,6 +706,7 @@ class RecordingService : LifecycleService() {
                 "requestedResolution" to requested.resolution,
                 "requestedFrameRate" to requested.frameRate,
                 "requestedBitratePreset" to requested.bitratePreset.name,
+                "requestedAutoQualityEnabled" to requested.autoQualityEnabled,
                 "requestedDynamicRange" to requested.dynamicRange,
                 "requestedStabilizationMode" to requested.stabilizationMode.name,
             ),
@@ -857,6 +861,10 @@ class RecordingService : LifecycleService() {
             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
             settings.stabilizationMode.toCaptureRequestValue(),
         )
+        extender.setCaptureRequestOption(
+            CaptureRequest.CONTROL_ZOOM_RATIO,
+            settings.cropZoomRatio.coerceCropZoomRatio(),
+        )
     }
 
     private fun applyRecorderOptions(
@@ -886,7 +894,6 @@ class RecordingService : LifecycleService() {
         Camera2CameraInfo.from(info).cameraId
 
     private fun BitratePreset.label(): String = when (this) {
-        BitratePreset.Auto -> "自动"
         BitratePreset.SpaceSaver -> "节省空间"
         BitratePreset.Standard -> "标准"
         BitratePreset.HighQuality -> "高画质"

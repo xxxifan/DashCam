@@ -143,17 +143,11 @@ object RecordingStartupFallbackPolicy {
             if (requested.codec in supported) {
                 add(requested.codec)
             }
-            if (requested.codec == "auto" && "h265" in supported) {
-                add("h265")
-            }
-            if (requested.codec == "auto" && "h264" in supported) {
-                add("h264")
-            }
             if (requested.codec == "h265" && "h264" in supported) {
                 add("h264")
             }
-            if (isEmpty() && "auto" in supported) {
-                add("auto")
+            if (isEmpty()) {
+                supported.firstOrNull()?.let { add(it) }
             }
         }.distinct()
     }
@@ -166,13 +160,10 @@ object RecordingStartupFallbackPolicy {
                     add(BitratePreset.SpaceSaver)
                 }
                 BitratePreset.Standard -> add(BitratePreset.SpaceSaver)
-                BitratePreset.Auto,
                 BitratePreset.SpaceSaver,
                 -> Unit
             }
-            if (requested.bitratePreset != BitratePreset.Auto) {
-                add(requested.bitratePreset)
-            }
+            add(requested.bitratePreset)
         }.ifEmpty {
             listOf(BitratePreset.SpaceSaver)
         }.distinct()

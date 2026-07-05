@@ -126,13 +126,16 @@ import com.xxxifan.dashcam.data.RecordingSettingsStore
 import com.xxxifan.dashcam.data.RecordingStopAlert
 import com.xxxifan.dashcam.data.RecordingThumbnailManager
 import com.xxxifan.dashcam.data.StabilizationMode
+import com.xxxifan.dashcam.data.coerceCropZoomRatio
 import com.xxxifan.dashcam.data.dateHeader
 import com.xxxifan.dashcam.data.formatBytes
 import com.xxxifan.dashcam.data.formatDuration
+import com.xxxifan.dashcam.data.recordingCropZoomRatios
 import com.xxxifan.dashcam.data.timeLabel
 import com.xxxifan.dashcam.recording.RecordingService
 import com.xxxifan.dashcam.recording.RecordingDowngradeReason
 import com.xxxifan.dashcam.recording.RecordingDowngradeState
+import com.xxxifan.dashcam.recording.RecordingQualityResolver
 import com.xxxifan.dashcam.recording.RecordingStateBus
 import com.xxxifan.dashcam.recording.RecordingUiState
 import com.xxxifan.dashcam.safety.RecordingSafetyDecision
@@ -262,6 +265,7 @@ private fun DashCamApp(
             settings = settingsStore.update {
                 it.coerceToCapabilities(cameraCapabilities)
                     .coerceToStorage(context)
+                    .resolveAutoQualityIfNeeded(context, cameraCapabilities)
             }
         }
 
@@ -482,6 +486,7 @@ private fun DashCamApp(
                             settings = settingsStore.update { current ->
                                 update(current).coerceToCapabilities(cameraCapabilities)
                                     .coerceToStorage(context)
+                                    .resolveAutoQualityIfNeeded(context, cameraCapabilities)
                             }
                         },
                     )
@@ -666,11 +671,13 @@ private fun RecordingStatusChips(
         AssistChip(onClick = {}, label = { Text("${settings.resolution}${settings.frameRate}fps") })
         AssistChip(onClick = {}, label = { Text(settings.codec.codecLabel()) })
         AssistChip(onClick = {}, label = { Text(settings.bitratePreset.label()) })
+        AssistChip(onClick = {}, label = { Text("画质 ${if (settings.autoQualityEnabled) "自动" else "手动"}") })
         AssistChip(onClick = {}, label = { Text(settings.dynamicRange.dynamicRangeLabel()) })
         AssistChip(onClick = {}, label = { Text("分段 ${settings.segmentMinutes} 分钟") })
         AssistChip(onClick = {}, label = { Text("音频 ${if (settings.audioEnabled) "开" else "关"}") })
         AssistChip(onClick = {}, label = { Text("防抖 ${settings.stabilizationMode.label()}") })
         AssistChip(onClick = {}, label = { Text(settings.cameraLabel) })
+        AssistChip(onClick = {}, label = { Text("裁剪 ${settings.cropZoomRatio.zoomRatioLabel()}") })
         AssistChip(
             onClick = {},
             label = { Text("剩余 ${storageEstimate.remainingBytes.formatBytes()}") },
@@ -759,6 +766,22 @@ private fun SettingsScreen(
         ?: maxLoopQuotaBytes.coerceAtLeast(RecordingStorageEstimator.MIN_LOOP_QUOTA_BYTES)
     val downgradeText = downgradeState?.settingsLockMessage()
     val qualityControlsEnabled = !isRecording && downgradeState == null
+    val qualitySettings = downgradeState?.activeSettings ?: settings
+    fun onManualQualityChange(update: (RecordingSettings) -> RecordingSettings) {
+        onSettingsChange { current ->
+            update(
+                current.copy(
+                    resolution = qualitySettings.resolution,
+                    frameRate = qualitySettings.frameRate,
+                    codec = qualitySettings.codec,
+                    bitratePreset = qualitySettings.bitratePreset,
+                    dynamicRange = qualitySettings.dynamicRange,
+                    stabilizationMode = qualitySettings.stabilizationMode,
+                    autoQualityEnabled = false,
+                ),
+            )
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -799,6 +822,29 @@ private fun SettingsScreen(
             }
         }
         item {
+            SettingsSection("画面裁剪放大") {
+                Text(
+                    "录制时按所选倍率中心裁剪并输出到当前分辨率。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    recordingCropZoomRatios.forEach { ratio ->
+                        FilterChip(
+                            enabled = !isRecording,
+                            selected = settings.cropZoomRatio.zoomRatioKey() == ratio.zoomRatioKey(),
+                            onClick = { onSettingsChange { it.copy(cropZoomRatio = ratio) } },
+                            label = { Text(ratio.zoomRatioLabel()) },
+                        )
+                    }
+                }
+            }
+        }
+        item {
             SettingsSection("画质") {
                 if (!downgradeText.isNullOrBlank()) {
                     Text(
@@ -808,13 +854,20 @@ private fun SettingsScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                 }
+                SettingSwitchRow(
+                    title = "自动画质",
+                    checked = settings.autoQualityEnabled,
+                    enabled = qualityControlsEnabled,
+                    onCheckedChange = { enabled -> onSettingsChange { it.copy(autoQualityEnabled = enabled) } },
+                )
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 Text("分辨率")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     capabilities.resolutionOptions.forEach { option ->
                         FilterChip(
                             enabled = qualityControlsEnabled,
-                            selected = (downgradeState?.activeSettings?.resolution ?: settings.resolution) == option,
-                            onClick = { onSettingsChange { it.copy(resolution = option) } },
+                            selected = qualitySettings.resolution == option,
+                            onClick = { onManualQualityChange { it.copy(resolution = option) } },
                             label = { Text(option) },
                         )
                     }
@@ -825,8 +878,8 @@ private fun SettingsScreen(
                     capabilities.frameRateOptions.forEach { option ->
                         FilterChip(
                             enabled = qualityControlsEnabled,
-                            selected = (downgradeState?.activeSettings?.frameRate ?: settings.frameRate) == option,
-                            onClick = { onSettingsChange { it.copy(frameRate = option) } },
+                            selected = qualitySettings.frameRate == option,
+                            onClick = { onManualQualityChange { it.copy(frameRate = option) } },
                             label = { Text("${option}fps") },
                         )
                     }
@@ -837,8 +890,8 @@ private fun SettingsScreen(
                     capabilities.codecOptions.forEach { option ->
                         FilterChip(
                             enabled = qualityControlsEnabled,
-                            selected = (downgradeState?.activeSettings?.codec ?: settings.codec) == option.id,
-                            onClick = { onSettingsChange { it.copy(codec = option.id) } },
+                            selected = qualitySettings.codec == option.id,
+                            onClick = { onManualQualityChange { it.copy(codec = option.id) } },
                             label = { Text(option.label) },
                         )
                     }
@@ -847,15 +900,14 @@ private fun SettingsScreen(
                 Text("质量档位")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
-                        BitratePreset.Auto,
                         BitratePreset.SpaceSaver,
                         BitratePreset.Standard,
                         BitratePreset.HighQuality,
                     ).forEach { option ->
                         FilterChip(
                             enabled = qualityControlsEnabled,
-                            selected = (downgradeState?.activeSettings?.bitratePreset ?: settings.bitratePreset) == option,
-                            onClick = { onSettingsChange { it.copy(bitratePreset = option) } },
+                            selected = qualitySettings.bitratePreset == option,
+                            onClick = { onManualQualityChange { it.copy(bitratePreset = option) } },
                             label = { Text(option.label()) },
                         )
                     }
@@ -867,8 +919,8 @@ private fun SettingsScreen(
                         capabilities.dynamicRangeOptions.forEach { option ->
                             FilterChip(
                                 enabled = qualityControlsEnabled,
-                                selected = (downgradeState?.activeSettings?.dynamicRange ?: settings.dynamicRange) == option.id,
-                                onClick = { onSettingsChange { it.copy(dynamicRange = option.id) } },
+                                selected = qualitySettings.dynamicRange == option.id,
+                                onClick = { onManualQualityChange { it.copy(dynamicRange = option.id) } },
                                 label = { Text(option.label) },
                             )
                         }
@@ -896,8 +948,8 @@ private fun SettingsScreen(
                     capabilities.stabilizationModes.forEach { mode ->
                         FilterChip(
                             enabled = qualityControlsEnabled,
-                            selected = (downgradeState?.activeSettings?.stabilizationMode ?: settings.stabilizationMode) == mode,
-                            onClick = { onSettingsChange { it.copy(stabilizationMode = mode) } },
+                            selected = qualitySettings.stabilizationMode == mode,
+                            onClick = { onManualQualityChange { it.copy(stabilizationMode = mode) } },
                             label = { Text(mode.label()) },
                         )
                     }
@@ -1323,7 +1375,7 @@ private fun RecordingListItem(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        "${entry.cameraLabel} · 防抖 ${entry.stabilizationMode.label()}",
+                        "${entry.cameraLabel} · 裁剪 ${entry.cropZoomRatio.zoomRatioLabel()} · 防抖 ${entry.stabilizationMode.label()}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -1946,8 +1998,10 @@ private fun RecordingSettings.coerceToCapabilities(capabilities: CameraCapabilit
         ?: capabilities.frameRateOptions.firstOrNull()
         ?: 30
     val codec = codec.takeIf { saved -> capabilities.codecOptions.any { it.id == saved } }
-        ?: capabilities.codecOptions.firstOrNull { it.id == "auto" }?.id
-        ?: "auto"
+        ?: capabilities.codecOptions.firstOrNull { it.id == "h265" }?.id
+        ?: capabilities.codecOptions.firstOrNull { it.id == "h264" }?.id
+        ?: capabilities.codecOptions.firstOrNull()?.id
+        ?: "h265"
     val dynamicRange = dynamicRange.takeIf { saved -> capabilities.dynamicRangeOptions.any { it.id == saved } }
         ?: "sdr"
     val stabilizationMode = stabilizationMode.takeIf { it in capabilities.stabilizationModes }
@@ -1963,8 +2017,23 @@ private fun RecordingSettings.coerceToCapabilities(capabilities: CameraCapabilit
         codec = codec,
         dynamicRange = dynamicRange,
         stabilizationMode = stabilizationMode,
+        cropZoomRatio = cropZoomRatio.coerceCropZoomRatio(),
     )
 }
+
+private fun RecordingSettings.resolveAutoQualityIfNeeded(
+    context: Context,
+    capabilities: CameraCapabilities,
+): RecordingSettings =
+    if (autoQualityEnabled) {
+        RecordingQualityResolver.resolveAutoQuality(
+            context = context,
+            requested = this,
+            capabilities = capabilities,
+        )
+    } else {
+        this
+    }
 
 private fun RecordingSettings.coerceToStorage(context: Context): RecordingSettings {
     val maxQuota = RecordingStorageEstimator.maxQuotaBytes(context, reservePercent)
@@ -2028,6 +2097,12 @@ private fun Float.speedLabel(): String {
     }
 }
 
+private fun Float.zoomRatioLabel(): String =
+    String.format(java.util.Locale.US, "%.1fx", coerceCropZoomRatio())
+
+private fun Float.zoomRatioKey(): Int =
+    (coerceCropZoomRatio() * 10).roundToLong().toInt()
+
 private fun String.stopReasonLabel(): String =
     when (this) {
         "Manual" -> "手动停止"
@@ -2050,7 +2125,6 @@ private fun StabilizationMode.label(): String = when (this) {
 }
 
 private fun BitratePreset.label(): String = when (this) {
-    BitratePreset.Auto -> "自动"
     BitratePreset.SpaceSaver -> "节省空间"
     BitratePreset.Standard -> "标准"
     BitratePreset.HighQuality -> "高画质"

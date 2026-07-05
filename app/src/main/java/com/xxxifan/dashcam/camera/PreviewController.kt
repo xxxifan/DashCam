@@ -1,6 +1,7 @@
 package com.xxxifan.dashcam.camera
 
 import android.content.Context
+import android.hardware.camera2.CaptureRequest
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.core.CameraInfo
@@ -11,6 +12,7 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import com.xxxifan.dashcam.data.RecordingSettings
+import com.xxxifan.dashcam.data.coerceCropZoomRatio
 
 object PreviewController {
     private var boundPreview: Preview? = null
@@ -82,6 +84,10 @@ object PreviewController {
         if (usePhysicalCamera && !physicalCameraId.isNullOrBlank()) {
             extender.setPhysicalCameraId(physicalCameraId)
         }
+        extender.setCaptureRequestOption(
+            CaptureRequest.CONTROL_ZOOM_RATIO,
+            settings.cropZoomRatio.coerceCropZoomRatio(),
+        )
         return builder.build().also {
             it.surfaceProvider = previewView.surfaceProvider
         }

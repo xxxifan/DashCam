@@ -103,7 +103,7 @@ object RecordingStorageEstimator {
                 entry.sizeBytes > 0L &&
                 entry.resolution == settings.resolution &&
                 entry.frameRate == settings.frameRate &&
-                (entry.codec == settings.codec || settings.codec == "auto") &&
+                (entry.codec == settings.codec || entry.codec == "auto") &&
                 entry.bitratePreset == settings.bitratePreset &&
                 entry.dynamicRange == settings.dynamicRange
         }
@@ -138,7 +138,6 @@ object RecordingStorageEstimator {
         }
         val codecMultiplier = when (settings.codec) {
             "h265" -> 0.72
-            "auto" -> 0.9
             else -> 1.0
         }
         val dynamicRangeMultiplier = if (settings.dynamicRange == "sdr") 1.0 else 1.2
@@ -148,13 +147,7 @@ object RecordingStorageEstimator {
     }
 
     fun targetVideoBitrate(settings: RecordingSettings): Int {
-        val preset = if (settings.bitratePreset == BitratePreset.Auto) {
-            BitratePreset.Standard
-        } else {
-            settings.bitratePreset
-        }
-        val baseMbps = when (preset) {
-            BitratePreset.Auto -> 8.0
+        val baseMbps = when (settings.bitratePreset) {
             BitratePreset.SpaceSaver -> bitrateTable(
                 settings = settings,
                 p720 = 4.0,

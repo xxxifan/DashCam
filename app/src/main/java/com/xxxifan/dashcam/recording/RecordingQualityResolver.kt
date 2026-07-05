@@ -15,13 +15,13 @@ object RecordingQualityResolver {
         requested: RecordingSettings,
         capabilities: CameraCapabilities,
     ): RecordingSettings {
-        if (requested.bitratePreset != BitratePreset.Auto) {
+        if (!requested.autoQualityEnabled) {
             return requested
         }
 
         val candidates = autoCandidates(requested, capabilities)
         if (candidates.isEmpty()) {
-            return requested.copy(bitratePreset = BitratePreset.Standard)
+            return requested.copy(bitratePreset = BitratePreset.Standard, autoQualityEnabled = true)
         }
 
         val safeBytes = RecordingStorageEstimator.safeRecordingCapacityBytes(context, requested)
@@ -36,8 +36,8 @@ object RecordingQualityResolver {
         requested: RecordingSettings,
         capabilities: CameraCapabilities,
     ): List<RecordingSettings> {
-        val resolutions = capabilities.resolutionOptions.ifEmpty { listOf("720p", "1080p") }
-        val frameRates = capabilities.frameRateOptions.ifEmpty { listOf(30) }
+        val resolutions = capabilities.resolutionOptions.sortedBy { resolutionRank(it) }
+        val frameRates = capabilities.frameRateOptions.sorted()
         val codecs = autoCodecs(requested, capabilities)
         val dynamicRanges = autoDynamicRanges(requested, capabilities)
         val stabilizationModes = autoStabilizationModes(requested, capabilities)
@@ -55,6 +55,7 @@ object RecordingQualityResolver {
                                             frameRate = frameRate,
                                             codec = codec,
                                             bitratePreset = preset,
+                                            autoQualityEnabled = true,
                                             dynamicRange = dynamicRange,
                                             stabilizationMode = stabilizationMode,
                                         ),
@@ -82,21 +83,17 @@ object RecordingQualityResolver {
         capabilities: CameraCapabilities,
     ): List<String> {
         val supported = capabilities.codecOptions.map { it.id }.toSet()
-        return if (requested.codec == "auto") {
-            buildList {
-                if ("h265" in supported) {
-                    add("h265")
-                }
-                if ("h264" in supported) {
-                    add("h264")
-                }
-                if (isEmpty()) {
-                    add("auto")
-                }
+        return buildList {
+            if ("h265" in supported) {
+                add("h265")
             }
-        } else {
-            listOf(requested.codec).filter { it in supported }.ifEmpty { listOf("auto") }
-        }
+            if ("h264" in supported) {
+                add("h264")
+            }
+            if (requested.codec in supported) {
+                add(requested.codec)
+            }
+        }.distinct().ifEmpty { listOf(requested.codec.takeIf { it != "auto" } ?: "h265") }
     }
 
     private fun autoDynamicRanges(
@@ -137,6 +134,7 @@ object RecordingQualityResolver {
     private val autoQualityComparator = compareBy<RecordingSettings> { resolutionRank(it.resolution) }
         .thenBy { it.frameRate }
         .thenBy { bitratePresetRank(it.bitratePreset) }
+        .thenBy { codecRank(it.codec) }
         .thenBy { if (it.dynamicRange == "sdr") 0 else 1 }
         .thenBy { stabilizationRank(it.stabilizationMode) }
 
@@ -151,7 +149,12 @@ object RecordingQualityResolver {
         BitratePreset.SpaceSaver -> 0
         BitratePreset.Standard -> 1
         BitratePreset.HighQuality -> 2
-        BitratePreset.Auto -> 1
+    }
+
+    private fun codecRank(codec: String): Int = when (codec) {
+        "h264" -> 0
+        "h265" -> 1
+        else -> 0
     }
 
     private fun stabilizationRank(mode: StabilizationMode): Int = when (mode) {

@@ -191,12 +191,11 @@ class CameraCapabilitiesRepository(
     }
 
     private fun codecOptions(): List<VideoCodecOption> = buildList {
-        add(VideoCodecOption("auto", "Auto", null))
-        if (hasEncoder(MediaFormat.MIMETYPE_VIDEO_AVC)) {
-            add(VideoCodecOption("h264", "H.264", MediaFormat.MIMETYPE_VIDEO_AVC))
-        }
         if (hasEncoder(MediaFormat.MIMETYPE_VIDEO_HEVC)) {
             add(VideoCodecOption("h265", "H.265", MediaFormat.MIMETYPE_VIDEO_HEVC))
+        }
+        if (hasEncoder(MediaFormat.MIMETYPE_VIDEO_AVC)) {
+            add(VideoCodecOption("h264", "H.264", MediaFormat.MIMETYPE_VIDEO_AVC))
         }
     }
 

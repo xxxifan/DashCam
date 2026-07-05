@@ -56,7 +56,7 @@ fun CameraOption.isUltraWide(): Boolean =
 fun String.codecLabel(): String = when (this) {
     "h264" -> "H.264"
     "h265" -> "H.265"
-    else -> "Auto"
+    else -> "H.265"
 }
 
 fun String.dynamicRangeLabel(): String = when (this) {

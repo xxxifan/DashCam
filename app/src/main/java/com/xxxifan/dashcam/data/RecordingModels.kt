@@ -15,23 +15,34 @@ enum class StabilizationMode {
 }
 
 enum class BitratePreset {
-    Auto,
     SpaceSaver,
     Standard,
     HighQuality,
 }
+
+const val DEFAULT_CROP_ZOOM_RATIO = 1f
+const val MIN_CROP_ZOOM_RATIO = 1f
+const val MAX_CROP_ZOOM_RATIO = 2f
+
+val recordingCropZoomRatios = listOf(1f, 1.2f, 1.4f, 1.6f, 2f)
+
+fun Float.coerceCropZoomRatio(): Float =
+    takeIf { it.isFinite() }?.coerceIn(MIN_CROP_ZOOM_RATIO, MAX_CROP_ZOOM_RATIO)
+        ?: DEFAULT_CROP_ZOOM_RATIO
 
 data class RecordingSettings(
     val segmentMinutes: Int = 2,
     val audioEnabled: Boolean = true,
     val resolution: String = "720p",
     val frameRate: Int = 30,
-    val codec: String = "auto",
+    val codec: String = "h265",
     val bitratePreset: BitratePreset = BitratePreset.Standard,
+    val autoQualityEnabled: Boolean = false,
     val dynamicRange: String = "sdr",
     val stabilizationMode: StabilizationMode = StabilizationMode.Standard,
     val cameraId: String = "",
     val cameraLabel: String = "1X 主镜头",
+    val cropZoomRatio: Float = DEFAULT_CROP_ZOOM_RATIO,
     val autoDowngradeEnabled: Boolean = true,
     val reservePercent: Int = 10,
     val loopQuotaBytes: Long? = null,
@@ -52,6 +63,7 @@ data class RecordingEntry(
     val stabilizationMode: StabilizationMode,
     val cameraId: String = "",
     val cameraLabel: String = "1X 主镜头",
+    val cropZoomRatio: Float = DEFAULT_CROP_ZOOM_RATIO,
     val exported: Boolean = false,
     val thumbnailPath: String? = null,
 ) {
@@ -75,6 +87,7 @@ data class RecordingEntry(
         .put("stabilizationMode", stabilizationMode.name)
         .put("cameraId", cameraId)
         .put("cameraLabel", cameraLabel)
+        .put("cropZoomRatio", cropZoomRatio)
         .put("exported", exported)
         .put("thumbnailPath", thumbnailPath)
         .toString()
@@ -90,7 +103,7 @@ data class RecordingEntry(
                 sizeBytes = json.optLong("sizeBytes", 0L),
                 resolution = json.optString("resolution", "1080p"),
                 frameRate = json.optInt("frameRate", 30),
-                codec = json.optString("codec", "auto"),
+                codec = json.optString("codec", "h265"),
                 bitratePreset = runCatching {
                     BitratePreset.valueOf(json.optString("bitratePreset", BitratePreset.Standard.name))
                 }.getOrDefault(BitratePreset.Standard),
@@ -101,6 +114,9 @@ data class RecordingEntry(
                 }.getOrDefault(StabilizationMode.Standard),
                 cameraId = json.optString("cameraId", ""),
                 cameraLabel = json.optString("cameraLabel", "1X 主镜头"),
+                cropZoomRatio = json.optDouble("cropZoomRatio", DEFAULT_CROP_ZOOM_RATIO.toDouble())
+                    .toFloat()
+                    .coerceCropZoomRatio(),
                 exported = json.optBoolean("exported", false),
                 thumbnailPath = json.optString("thumbnailPath").takeIf { it.isNotBlank() },
             )
@@ -116,7 +132,7 @@ data class RecordingEntry(
                 sizeBytes = file.length(),
                 resolution = parsed?.second ?: "1080p",
                 frameRate = parsed?.third ?: 30,
-                codec = parsed?.fourth ?: "auto",
+                codec = parsed?.fourth ?: "h265",
                 bitratePreset = BitratePreset.Standard,
                 dynamicRange = "sdr",
                 audioEnabled = true,
