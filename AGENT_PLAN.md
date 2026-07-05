@@ -743,7 +743,7 @@ Current anchors:
 
 ### Phase 6: Recording Library, Export, Share
 
-Status: Partial.
+Status: Done, pending device validation.
 
 - [x] Implement recording list in reverse chronological order.
 - [x] Add date sticky headers.
@@ -767,7 +767,8 @@ Status: Partial.
   - Current state: export copies the selected private recording into public `Movies/DashCam` through MediaStore with pending/complete state, cleans up partial copies on failure, and marks the recording metadata as exported only after the copy succeeds.
   - Current state: sharing remains a separate FileProvider-backed action.
 - [x] Implement share via FileProvider.
-- [ ] Add clipping/editing placeholder entry.
+- [x] Add clipping/editing placeholder entry.
+  - Current state: the playback overflow menu includes a reserved clipping entry that clearly indicates the editor will arrive in a later version.
 
 Current anchors:
 

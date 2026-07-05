@@ -43,6 +43,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.MoreVert
@@ -288,6 +289,9 @@ private fun DashCamApp(
                 onDismiss = { playbackEntry = null },
                 onShare = { context.shareRecording(activePlaybackEntry) },
                 onExport = { exportRecording(activePlaybackEntry) },
+                onClip = {
+                    Toast.makeText(context, "剪辑功能将在后续版本加入", Toast.LENGTH_SHORT).show()
+                },
             )
         } else {
             Scaffold(
@@ -1098,6 +1102,7 @@ private fun VideoPlaybackScreen(
     onDismiss: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
+    onClip: () -> Unit,
 ) {
     val context = LocalContext.current
     val activity = context.findActivity()
@@ -1168,6 +1173,7 @@ private fun VideoPlaybackScreen(
                 onDismiss = onDismiss,
                 onShare = onShare,
                 onExport = onExport,
+                onClip = onClip,
             )
             Box(
                 modifier = Modifier
@@ -1225,6 +1231,7 @@ private fun VideoPlaybackTopBar(
     onDismiss: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
+    onClip: () -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     Row(
@@ -1262,6 +1269,14 @@ private fun VideoPlaybackTopBar(
                 expanded = showMenu,
                 onDismissRequest = { showMenu = false },
             ) {
+                DropdownMenuItem(
+                    text = { Text("剪辑") },
+                    leadingIcon = { Icon(Icons.Filled.ContentCut, contentDescription = null) },
+                    onClick = {
+                        showMenu = false
+                        onClip()
+                    },
+                )
                 DropdownMenuItem(
                     text = { Text("导出") },
                     leadingIcon = { Icon(Icons.Filled.FileUpload, contentDescription = null) },
