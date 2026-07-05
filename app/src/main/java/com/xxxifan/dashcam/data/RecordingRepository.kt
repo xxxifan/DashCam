@@ -31,6 +31,17 @@ class RecordingRepository(
         persist(next)
     }
 
+    fun markExported(id: String) {
+        val next = loadEntries().map { existing ->
+            if (existing.id == id) {
+                existing.copy(exported = true)
+            } else {
+                existing
+            }
+        }.sortedByDescending { it.startedAtMillis }
+        persist(next)
+    }
+
     fun delete(entry: RecordingEntry) {
         entry.file.delete()
         entry.thumbnailPath?.let { File(it).delete() }

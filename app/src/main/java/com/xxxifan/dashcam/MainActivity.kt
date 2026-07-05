@@ -2,6 +2,7 @@ package com.xxxifan.dashcam
 
 import android.Manifest
 import android.app.Activity
+import android.content.ContentValues
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -9,9 +10,12 @@ import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.provider.MediaStore
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.view.ViewGroup
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -78,6 +82,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -124,8 +129,10 @@ import com.xxxifan.dashcam.storage.LoopStorageManager
 import com.xxxifan.dashcam.storage.RecordingStorageEstimate
 import com.xxxifan.dashcam.storage.RecordingStorageEstimator
 import java.io.File
+import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToLong
 
@@ -178,6 +185,7 @@ private fun DashCamApp(
         ),
     ) {
         val context = LocalContext.current
+        val appScope = rememberCoroutineScope()
         val settingsStore = remember { RecordingSettingsStore() }
         val recordingRepository = remember { RecordingRepository() }
         val thumbnailManager = remember { RecordingThumbnailManager(context, recordingRepository) }
@@ -200,6 +208,19 @@ private fun DashCamApp(
         var selectedTab by remember { mutableIntStateOf(0) }
         var showConfirm by remember { mutableStateOf(false) }
         val shouldShowConfirmAfterPermission = consumePermissionResult()
+        val exportRecording: (RecordingEntry) -> Unit = { entry ->
+            appScope.launch {
+                val result = context.exportRecordingToMediaStore(entry)
+                result
+                    .onSuccess {
+                        recordingRepository.markExported(entry.id)
+                        Toast.makeText(context, "已导出到 Movies/DashCam", Toast.LENGTH_SHORT).show()
+                    }
+                    .onFailure {
+                        Toast.makeText(context, "导出失败：${it.message ?: "未知错误"}", Toast.LENGTH_LONG).show()
+                    }
+            }
+        }
 
         LaunchedEffect(cameraCapabilities) {
             settings = settingsStore.update {
@@ -266,7 +287,7 @@ private fun DashCamApp(
                 entry = activePlaybackEntry,
                 onDismiss = { playbackEntry = null },
                 onShare = { context.shareRecording(activePlaybackEntry) },
-                onExport = { context.exportRecording(activePlaybackEntry) },
+                onExport = { exportRecording(activePlaybackEntry) },
             )
         } else {
             Scaffold(
@@ -325,7 +346,7 @@ private fun DashCamApp(
                         onOpenPlayback = { playbackEntry = it },
                         onDelete = recordingRepository::delete,
                         onShare = { context.shareRecording(it) },
-                        onExport = { context.exportRecording(it) },
+                        onExport = exportRecording,
                     )
                     2 -> SettingsScreen(
                         padding = padding,
@@ -1012,6 +1033,13 @@ private fun RecordingListItem(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (entry.exported) {
+                    Text(
+                        "已导出到 Movies/DashCam",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
             }
             IconButton(onClick = onShare) {
                 Icon(Icons.Filled.Share, contentDescription = "分享")
@@ -1427,15 +1455,46 @@ private fun Context.shareRecording(entry: RecordingEntry) {
     startActivity(Intent.createChooser(intent, "分享视频"))
 }
 
-private fun Context.exportRecording(entry: RecordingEntry) {
-    val intent = Intent(Intent.ACTION_VIEW)
-        .setDataAndType(fileProviderUri(entry.file), "video/mp4")
-        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    startActivity(Intent.createChooser(intent, "打开或导出视频"))
-}
-
 private fun Context.fileProviderUri(file: File): Uri =
     FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+
+private suspend fun Context.exportRecordingToMediaStore(entry: RecordingEntry): Result<Uri> = withContext(Dispatchers.IO) {
+    runCatching {
+        val source = entry.file
+        if (!source.exists()) {
+            throw IOException("源文件不存在")
+        }
+        val resolver = contentResolver
+        val displayName = source.name
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/DashCam")
+            put(MediaStore.Video.Media.DATE_TAKEN, entry.startedAtMillis)
+            put(MediaStore.Video.Media.DURATION, entry.durationMillis)
+            put(MediaStore.Video.Media.SIZE, source.length())
+            put(MediaStore.Video.Media.IS_PENDING, 1)
+        }
+        val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val uri = resolver.insert(collection, values)
+            ?: throw IOException("无法创建媒体库条目")
+        try {
+            resolver.openOutputStream(uri)?.use { output ->
+                source.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            } ?: throw IOException("无法写入导出文件")
+            val completedValues = ContentValues().apply {
+                put(MediaStore.Video.Media.IS_PENDING, 0)
+            }
+            resolver.update(uri, completedValues, null, null)
+            uri
+        } catch (error: Throwable) {
+            resolver.delete(uri, null, null)
+            throw error
+        }
+    }
+}
 
 private fun Context.findActivity(): Activity? {
     var current = this

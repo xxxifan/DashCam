@@ -763,10 +763,9 @@ Status: Partial.
 - [x] Add playback overflow menu for export and share actions.
 - [x] Implement delete with confirmation.
 - [x] Do not implement lock/protect in v1.
-- [ ] Implement export to MediaStore.
-  - Current state: export action opens a chooser with a private FileProvider URI.
-  - Required next step: save a copy into public external media storage, such as `Movies/DashCam`, via MediaStore and update exported metadata only after the copy succeeds.
-  - Export must not be implemented as "open with external app"; sharing/opening remains a separate action.
+- [x] Implement export to MediaStore.
+  - Current state: export copies the selected private recording into public `Movies/DashCam` through MediaStore with pending/complete state, cleans up partial copies on failure, and marks the recording metadata as exported only after the copy succeeds.
+  - Current state: sharing remains a separate FileProvider-backed action.
 - [x] Implement share via FileProvider.
 - [ ] Add clipping/editing placeholder entry.
 
@@ -836,8 +835,8 @@ Current anchors:
 - [x] Full-screen playback supports seek bar, current time, total duration, buffered progress, play/pause, and playback speed selection.
 - [x] Landscape videos can be viewed in a landscape full-screen playback orientation, and the app restores normal orientation after exiting playback.
 - [x] Playback provides export and share actions from an overflow menu.
-- [ ] Exported recordings appear in user-visible media storage.
-- [ ] Export saves a copy to public external media storage through MediaStore instead of launching an external app chooser.
+- [x] Exported recordings appear in user-visible media storage.
+- [x] Export saves a copy to public external media storage through MediaStore instead of launching an external app chooser.
 - [x] Sharing works through Android share sheet.
 - [deferred] Playback can later cast through Miracast/system cast or DLNA after explicit user action.
 - [ ] Safety monitor can notify about thermal, battery, and storage pressure.
