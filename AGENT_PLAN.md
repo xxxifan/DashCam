@@ -728,10 +728,12 @@ Status: Partial skeleton.
 - [~] Implement auto-downgrade setting.
   - Current state: setting is persisted and now controls startup storage fallback plus runtime thermal, battery, and storage pressure downgrades. Downgraded sessions expose the active temporary profile and lock quality-related controls with explanatory UI text.
   - Remaining: tune thresholds through long-run device tests and decide whether later versions should restore quality automatically.
-- [ ] Implement emergency stop behavior driven by safety decisions.
-- [ ] Stream safety decisions to UI/notification/log sinks.
-- [ ] Keep `RecordingSafetyPolicy` independent from future voice/TTS/sound/vibration sinks.
-  - Current state: interface boundary supports this; integration must preserve it.
+- [x] Implement emergency stop behavior driven by safety decisions.
+  - Current state: thermal, storage, battery, and repeated recording-pipeline failures are evaluated through `RecordingSafetyPolicy`; emergency decisions stop recording and surface a clear message.
+- [x] Stream safety decisions to UI/notification/log sinks.
+  - Current state: non-normal safety decisions are stored in recording UI state, shown on the home screen, sent to the foreground notification, and logged.
+- [x] Keep `RecordingSafetyPolicy` independent from future voice/TTS/sound/vibration sinks.
+  - Current state: the policy only maps health snapshots to decisions. `RecordingService` handles execution and the current UI/notification/log sinks, leaving future voice/TTS/sound/vibration sinks outside the policy boundary.
 
 Current anchors:
 

@@ -100,6 +100,7 @@ import com.xxxifan.dashcam.recording.RecordingService
 import com.xxxifan.dashcam.recording.RecordingDowngradeReason
 import com.xxxifan.dashcam.recording.RecordingDowngradeState
 import com.xxxifan.dashcam.recording.RecordingStateBus
+import com.xxxifan.dashcam.safety.RecordingSafetyDecision
 import com.xxxifan.dashcam.storage.LoopStorageManager
 import com.xxxifan.dashcam.storage.RecordingStorageEstimate
 import com.xxxifan.dashcam.storage.RecordingStorageEstimator
@@ -262,6 +263,7 @@ private fun DashCamApp(
                 0 -> RecordingHome(
                     padding = padding,
                     stateMessage = uiState.message,
+                    safetyDecision = uiState.safetyDecision,
                     fallbackGuidance = uiState.fallbackGuidance,
                     isRecording = uiState.isRecording,
                     settings = recordingSettings,
@@ -324,6 +326,7 @@ private fun AppTopBar(
 private fun RecordingHome(
     padding: PaddingValues,
     stateMessage: String,
+    safetyDecision: RecordingSafetyDecision?,
     fallbackGuidance: String?,
     isRecording: Boolean,
     settings: RecordingSettings,
@@ -346,6 +349,7 @@ private fun RecordingHome(
         RecordingStatusCard(
             isRecording = isRecording,
             stateMessage = stateMessage,
+            safetyDecision = safetyDecision,
             fallbackGuidance = fallbackGuidance,
             settings = settings,
             storageEstimate = storageEstimate,
@@ -384,6 +388,7 @@ private fun RecordingHome(
 private fun RecordingStatusCard(
     isRecording: Boolean,
     stateMessage: String,
+    safetyDecision: RecordingSafetyDecision?,
     fallbackGuidance: String?,
     settings: RecordingSettings,
     storageEstimate: RecordingStorageEstimate,
@@ -404,6 +409,13 @@ private fun RecordingStatusCard(
                 fontWeight = FontWeight.Bold,
             )
             Text(stateMessage, style = MaterialTheme.typography.bodyMedium)
+            if (safetyDecision != null) {
+                Text(
+                    safetyDecision.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             if (isRecording && storageEstimate.remainingBytes <= 0L) {
                 Text(
                     "当前安全可写空间不足，后续片段会继续尝试自动降档或停止录制。",

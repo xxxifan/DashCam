@@ -48,6 +48,12 @@ import com.xxxifan.dashcam.data.RecordingRepository
 import com.xxxifan.dashcam.data.RecordingSettings
 import com.xxxifan.dashcam.data.RecordingSettingsStore
 import com.xxxifan.dashcam.data.StabilizationMode
+import com.xxxifan.dashcam.safety.DefaultRecordingSafetyPolicy
+import com.xxxifan.dashcam.safety.RecordingHealthSnapshot
+import com.xxxifan.dashcam.safety.RecordingSafetyDecision
+import com.xxxifan.dashcam.safety.SafetyAction
+import com.xxxifan.dashcam.safety.SafetyLevel
+import com.xxxifan.dashcam.safety.SafetyReason
 import com.xxxifan.dashcam.storage.LoopStorageManager
 import com.xxxifan.dashcam.storage.RecordingStorageEstimator
 import kotlinx.coroutines.Job
@@ -72,6 +78,8 @@ class RecordingService : LifecycleService() {
     private var requestedSessionSettings: RecordingSettings? = null
     private var activeSessionSettings: RecordingSettings? = null
     private var downgradeState: RecordingDowngradeState? = null
+    private var latestSafetyDecision: RecordingSafetyDecision? = null
+    private var pipelineFailureCount = 0
     private var cameraInterruptionCount = 0
     private var serviceStarted = false
     private var stopRequested = false
@@ -109,6 +117,7 @@ class RecordingService : LifecycleService() {
         requestedSessionSettings = null
         activeSessionSettings = null
         downgradeState = null
+        latestSafetyDecision = null
         RecordingStateBus.update(RecordingUiState(message = "录制已停止"))
         super.onDestroy()
     }
@@ -248,6 +257,7 @@ class RecordingService : LifecycleService() {
                 message = recordingMessage,
                 activeSettings = settings,
                 downgradeState = downgradeState,
+                safetyDecision = latestSafetyDecision,
                 fallbackGuidance = null,
                 startedAtMillis = context.startedAtMillis,
                 currentSegmentPath = context.file.absolutePath,
@@ -282,6 +292,7 @@ class RecordingService : LifecycleService() {
                 message = "正在录制 ${segment.file.name}",
                 activeSettings = segment.settings,
                 downgradeState = downgradeState,
+                safetyDecision = latestSafetyDecision,
                 fallbackGuidance = null,
                 startedAtMillis = segment.startedAtMillis,
                 currentSegmentPath = segment.file.absolutePath,
@@ -299,6 +310,7 @@ class RecordingService : LifecycleService() {
 
         if (!event.hasError() && segment.file.exists() && segment.file.length() > 0L) {
             cameraInterruptionCount = 0
+            pipelineFailureCount = 0
             recordingRepository.add(
                 RecordingEntry(
                     id = segment.id,
@@ -328,6 +340,7 @@ class RecordingService : LifecycleService() {
                 stopSelf()
             }
         } else {
+            pipelineFailureCount += 1
             Log.w(TAG, "Recording finalized with error ${event.error}: ${event.cause?.message}")
             if (segment.file.length() == 0L) {
                 segment.file.delete()
@@ -390,6 +403,7 @@ class RecordingService : LifecycleService() {
         requestedSessionSettings = null
         activeSessionSettings = null
         downgradeState = null
+        latestSafetyDecision = null
         segmentJob?.cancel()
         val recording = activeRecording
         if (recording != null) {
@@ -410,6 +424,7 @@ class RecordingService : LifecycleService() {
         requestedSessionSettings = null
         activeSessionSettings = null
         downgradeState = null
+        latestSafetyDecision = null
         RecordingStateBus.update(
             RecordingUiState(
                 message = message,
@@ -439,20 +454,20 @@ class RecordingService : LifecycleService() {
     private fun evaluateResourcePressure() {
         val requested = requestedSessionSettings ?: return
         val active = activeSessionSettings ?: return
-        if (!requested.autoDowngradeEnabled) {
+        val snapshot = buildHealthSnapshot(active)
+        val decision = DefaultRecordingSafetyPolicy(requested.autoDowngradeEnabled).evaluate(snapshot)
+        publishSafetyDecision(decision)
+        if (decision.actions.contains(SafetyAction.StopRecording)) {
+            stopWithMessage(
+                message = decision.message,
+                fallbackGuidance = getString(R.string.recording_emergency_stop_body),
+            )
             return
         }
-        val reasons = buildSet {
-            if (thermalNeedsDowngrade()) {
-                add(RecordingDowngradeReason.Thermal)
-            }
-            if (batteryNeedsDowngrade()) {
-                add(RecordingDowngradeReason.Battery)
-            }
-            if (!storageManager.ensureSpaceForNextSegment(active)) {
-                add(RecordingDowngradeReason.StartupStorage)
-            }
+        if (!decision.actions.contains(SafetyAction.DowngradeQuality)) {
+            return
         }
+        val reasons = decision.reasons.toDowngradeReasons()
         if (reasons.isEmpty()) {
             return
         }
@@ -486,6 +501,7 @@ class RecordingService : LifecycleService() {
                 message = nextState.message,
                 activeSettings = fallback,
                 downgradeState = nextState,
+                safetyDecision = decision,
                 startedAtMillis = currentSegment?.startedAtMillis,
                 currentSegmentPath = currentSegment?.file?.absolutePath,
             ),
@@ -493,18 +509,72 @@ class RecordingService : LifecycleService() {
         updateNotification(nextState.message)
     }
 
-    private fun thermalNeedsDowngrade(): Boolean {
-        val powerManager = getSystemService<PowerManager>() ?: return false
-        return powerManager.currentThermalStatus >= PowerManager.THERMAL_STATUS_MODERATE
+    private fun buildHealthSnapshot(activeSettings: RecordingSettings): RecordingHealthSnapshot =
+        RecordingHealthSnapshot(
+            thermalLevel = thermalLevel(),
+            storageLevel = storageLevel(activeSettings),
+            batteryLevel = batteryLevel(),
+            pipelineLevel = pipelineLevel(),
+        )
+
+    private fun publishSafetyDecision(decision: RecordingSafetyDecision) {
+        if (decision.level == SafetyLevel.Normal) {
+            latestSafetyDecision = null
+            return
+        }
+        latestSafetyDecision = decision
+        Log.w(TAG, "Safety decision: $decision")
+        if (decision.shouldNotifyUser) {
+            updateNotification(decision.message)
+        }
     }
 
-    private fun batteryNeedsDowngrade(): Boolean {
-        val batteryManager = getSystemService<BatteryManager>() ?: return false
-        val batteryPercent = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        if (batteryPercent < 0 || batteryPercent >= BATTERY_DOWNGRADE_PERCENT) {
-            return false
+    private fun Set<SafetyReason>.toDowngradeReasons(): Set<RecordingDowngradeReason> =
+        mapNotNull { reason ->
+            when (reason) {
+                SafetyReason.Thermal -> RecordingDowngradeReason.Thermal
+                SafetyReason.Storage -> RecordingDowngradeReason.StartupStorage
+                SafetyReason.Battery -> RecordingDowngradeReason.Battery
+                SafetyReason.RecordingPipeline -> null
+            }
+        }.toSet()
+
+    private fun thermalLevel(): SafetyLevel {
+        val powerManager = getSystemService<PowerManager>() ?: return SafetyLevel.Normal
+        return when (powerManager.currentThermalStatus) {
+            in PowerManager.THERMAL_STATUS_CRITICAL..Int.MAX_VALUE -> SafetyLevel.Emergency
+            PowerManager.THERMAL_STATUS_SEVERE -> SafetyLevel.Pressure
+            PowerManager.THERMAL_STATUS_MODERATE -> SafetyLevel.Pressure
+            PowerManager.THERMAL_STATUS_LIGHT -> SafetyLevel.Notice
+            else -> SafetyLevel.Normal
         }
-        return batteryManager.isCharging().not()
+    }
+
+    private fun storageLevel(settings: RecordingSettings): SafetyLevel =
+        if (storageManager.ensureSpaceForNextSegment(settings)) {
+            SafetyLevel.Normal
+        } else {
+            SafetyLevel.Emergency
+        }
+
+    private fun batteryLevel(): SafetyLevel {
+        val batteryManager = getSystemService<BatteryManager>() ?: return SafetyLevel.Normal
+        val batteryPercent = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        if (batteryPercent < 0 || batteryManager.isCharging()) {
+            return SafetyLevel.Normal
+        }
+        return when {
+            batteryPercent < BATTERY_EMERGENCY_PERCENT -> SafetyLevel.Emergency
+            batteryPercent < BATTERY_DOWNGRADE_PERCENT -> SafetyLevel.Pressure
+            batteryPercent < BATTERY_NOTICE_PERCENT -> SafetyLevel.Notice
+            else -> SafetyLevel.Normal
+        }
+    }
+
+    private fun pipelineLevel(): SafetyLevel = when {
+        pipelineFailureCount >= PIPELINE_EMERGENCY_FAILURES -> SafetyLevel.Emergency
+        pipelineFailureCount >= PIPELINE_PRESSURE_FAILURES -> SafetyLevel.Pressure
+        else -> SafetyLevel.Normal
     }
 
     private fun storageDowngradeMessage(settings: RecordingSettings): String =
@@ -663,7 +733,11 @@ class RecordingService : LifecycleService() {
         private const val ACTION_STOP = "com.xxxifan.dashcam.action.STOP"
         private const val CAMERA_INTERRUPTION_WARNING_THRESHOLD = 2
         private const val HEALTH_CHECK_INTERVAL_MILLIS = 30_000L
+        private const val BATTERY_NOTICE_PERCENT = 20
         private const val BATTERY_DOWNGRADE_PERCENT = 10
+        private const val BATTERY_EMERGENCY_PERCENT = 5
+        private const val PIPELINE_PRESSURE_FAILURES = 1
+        private const val PIPELINE_EMERGENCY_FAILURES = 3
 
         private val fileTimestampFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
 

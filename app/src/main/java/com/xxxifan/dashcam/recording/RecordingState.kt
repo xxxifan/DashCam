@@ -1,6 +1,7 @@
 package com.xxxifan.dashcam.recording
 
 import com.xxxifan.dashcam.data.RecordingSettings
+import com.xxxifan.dashcam.safety.RecordingSafetyDecision
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,6 +24,7 @@ data class RecordingUiState(
     val message: String = "准备录制",
     val activeSettings: RecordingSettings? = null,
     val downgradeState: RecordingDowngradeState? = null,
+    val safetyDecision: RecordingSafetyDecision? = null,
     val fallbackGuidance: String? = null,
     val startedAtMillis: Long? = null,
     val currentSegmentPath: String? = null,
