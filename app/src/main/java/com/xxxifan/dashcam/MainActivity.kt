@@ -29,6 +29,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -110,10 +112,12 @@ import com.xxxifan.dashcam.camera.PreviewController
 import com.xxxifan.dashcam.camera.codecLabel
 import com.xxxifan.dashcam.camera.dynamicRangeLabel
 import com.xxxifan.dashcam.data.BitratePreset
+import com.xxxifan.dashcam.data.RecordingAlertStore
 import com.xxxifan.dashcam.data.RecordingEntry
 import com.xxxifan.dashcam.data.RecordingRepository
 import com.xxxifan.dashcam.data.RecordingSettings
 import com.xxxifan.dashcam.data.RecordingSettingsStore
+import com.xxxifan.dashcam.data.RecordingStopAlert
 import com.xxxifan.dashcam.data.RecordingThumbnailManager
 import com.xxxifan.dashcam.data.StabilizationMode
 import com.xxxifan.dashcam.data.dateHeader
@@ -188,12 +192,14 @@ private fun DashCamApp(
         val context = LocalContext.current
         val appScope = rememberCoroutineScope()
         val settingsStore = remember { RecordingSettingsStore() }
+        val alertStore = remember { RecordingAlertStore() }
         val recordingRepository = remember { RecordingRepository() }
         val thumbnailManager = remember { RecordingThumbnailManager(context, recordingRepository) }
         val cameraCapabilities = remember { CameraCapabilitiesRepository(context).capabilities() }
         val uiState by RecordingStateBus.state.collectAsStateWithLifecycle()
         val entries by recordingRepository.entries.collectAsStateWithLifecycle()
         var settings by remember { mutableStateOf(settingsStore.get()) }
+        var stopAlert by remember { mutableStateOf(alertStore.getLastStopAlert()) }
         var playbackEntry by remember { mutableStateOf<RecordingEntry?>(null) }
         var storageEstimate by remember {
             mutableStateOf(
@@ -266,6 +272,12 @@ private fun DashCamApp(
             )
         }
 
+        LaunchedEffect(uiState.isRecording, uiState.message, uiState.fallbackGuidance) {
+            if (!uiState.isRecording) {
+                stopAlert = alertStore.getLastStopAlert()
+            }
+        }
+
         LaunchedEffect(shouldShowConfirmAfterPermission) {
             if (shouldShowConfirmAfterPermission) {
                 showConfirm = true
@@ -277,6 +289,8 @@ private fun DashCamApp(
                 onDismiss = { showConfirm = false },
                 onConfirm = {
                     showConfirm = false
+                    alertStore.clearLastStopAlert()
+                    stopAlert = null
                     context.startRecordingService()
                 },
             )
@@ -328,6 +342,7 @@ private fun DashCamApp(
                     0 -> RecordingHome(
                         padding = padding,
                         stateMessage = uiState.message,
+                        stopAlert = if (uiState.isRecording) null else stopAlert,
                         safetyDecision = uiState.safetyDecision,
                         fallbackGuidance = uiState.fallbackGuidance,
                         isRecording = uiState.isRecording,
@@ -340,7 +355,11 @@ private fun DashCamApp(
                                 requestPermissions()
                             }
                         },
-                        onStop = { context.stopRecordingService() },
+                        onStop = {
+                            alertStore.clearLastStopAlert()
+                            stopAlert = null
+                            context.stopRecordingService()
+                        },
                         onOpenSettings = { selectedTab = 2 },
                     )
                     1 -> LibraryScreen(
@@ -394,6 +413,7 @@ private fun AppTopBar(
 private fun RecordingHome(
     padding: PaddingValues,
     stateMessage: String,
+    stopAlert: RecordingStopAlert?,
     safetyDecision: RecordingSafetyDecision?,
     fallbackGuidance: String?,
     isRecording: Boolean,
@@ -403,29 +423,34 @@ private fun RecordingHome(
     onStop: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    Column(
+    LazyColumn(
         modifier = Modifier
             .padding(padding)
-            .fillMaxSize()
-            .padding(16.dp),
+            .fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        CameraPreviewCard(
-            isRecording = isRecording,
-            settings = settings,
-        )
-        RecordingStatusCard(
-            isRecording = isRecording,
-            stateMessage = stateMessage,
-            safetyDecision = safetyDecision,
-            fallbackGuidance = fallbackGuidance,
-            settings = settings,
-            storageEstimate = storageEstimate,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            CameraPreviewCard(
+                isRecording = isRecording,
+                settings = settings,
+            )
+        }
+        item {
+            RecordingStatusCard(
+                isRecording = isRecording,
+                stateMessage = stateMessage,
+                stopAlert = stopAlert,
+                safetyDecision = safetyDecision,
+                fallbackGuidance = fallbackGuidance,
+                settings = settings,
+                storageEstimate = storageEstimate,
+            )
+        }
+        item {
             Button(
                 onClick = if (isRecording) onStop else onStart,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(
                     if (isRecording) Icons.Filled.Stop else Icons.Filled.Movie,
@@ -435,20 +460,24 @@ private fun RecordingHome(
                 Text(if (isRecording) "停止录制" else "开始录制")
             }
         }
-        OutlinedButton(
-            onClick = onOpenSettings,
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !isRecording,
-        ) {
-            Icon(Icons.Filled.Settings, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("录制设置")
+        item {
+            OutlinedButton(
+                onClick = onOpenSettings,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isRecording,
+            ) {
+                Icon(Icons.Filled.Settings, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("录制设置")
+            }
         }
-        Text(
-            "开始录制后会显示常驻通知，之后你可以按电源键熄屏。建议在系统电池设置里允许 DashCam 后台运行。",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        item {
+            Text(
+                "开始录制后会显示常驻通知，之后你可以按电源键熄屏。建议在系统电池设置里允许 DashCam 后台运行。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -456,11 +485,15 @@ private fun RecordingHome(
 private fun RecordingStatusCard(
     isRecording: Boolean,
     stateMessage: String,
+    stopAlert: RecordingStopAlert?,
     safetyDecision: RecordingSafetyDecision?,
     fallbackGuidance: String?,
     settings: RecordingSettings,
     storageEstimate: RecordingStorageEstimate,
 ) {
+    val displayMessage = stopAlert?.let { "上次录制停止：${it.message}" } ?: stateMessage
+    val displayGuidance = stopAlert?.fallbackGuidance ?: fallbackGuidance
+
     Card(
         colors = CardDefaults.cardColors(
             containerColor = if (isRecording) Color(0xFFEFF6FF) else Color.White,
@@ -476,7 +509,15 @@ private fun RecordingStatusCard(
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
             )
-            Text(stateMessage, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                displayMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (stopAlert != null) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+            )
             if (safetyDecision != null) {
                 Text(
                     safetyDecision.message,
@@ -491,39 +532,45 @@ private fun RecordingStatusCard(
                     color = MaterialTheme.colorScheme.error,
                 )
             }
-            if (!fallbackGuidance.isNullOrBlank()) {
+            if (!displayGuidance.isNullOrBlank()) {
                 Text(
-                    fallbackGuidance,
+                    displayGuidance,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                AssistChip(onClick = {}, label = { Text("${settings.resolution}${settings.frameRate}fps") })
-                AssistChip(onClick = {}, label = { Text(settings.codec.codecLabel()) })
-                AssistChip(onClick = {}, label = { Text(settings.bitratePreset.label()) })
-                AssistChip(onClick = {}, label = { Text(settings.dynamicRange.dynamicRangeLabel()) })
-                AssistChip(onClick = {}, label = { Text("分段 ${settings.segmentMinutes} 分钟") })
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(onClick = {}, label = { Text("音频 ${if (settings.audioEnabled) "开" else "关"}") })
-                AssistChip(onClick = {}, label = { Text("防抖 ${settings.stabilizationMode.label()}") })
-                AssistChip(onClick = {}, label = { Text(settings.cameraLabel) })
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(
-                    onClick = {},
-                    label = { Text("剩余 ${storageEstimate.remainingBytes.formatBytes()}") },
-                )
-                AssistChip(
-                    onClick = {},
-                    label = { Text("预计 ${storageEstimate.estimatedRecordableSeconds.formatRecordableTime()}") },
-                )
-            }
+            RecordingStatusChips(settings = settings, storageEstimate = storageEstimate)
         }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RecordingStatusChips(
+    settings: RecordingSettings,
+    storageEstimate: RecordingStorageEstimate,
+) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        AssistChip(onClick = {}, label = { Text("${settings.resolution}${settings.frameRate}fps") })
+        AssistChip(onClick = {}, label = { Text(settings.codec.codecLabel()) })
+        AssistChip(onClick = {}, label = { Text(settings.bitratePreset.label()) })
+        AssistChip(onClick = {}, label = { Text(settings.dynamicRange.dynamicRangeLabel()) })
+        AssistChip(onClick = {}, label = { Text("分段 ${settings.segmentMinutes} 分钟") })
+        AssistChip(onClick = {}, label = { Text("音频 ${if (settings.audioEnabled) "开" else "关"}") })
+        AssistChip(onClick = {}, label = { Text("防抖 ${settings.stabilizationMode.label()}") })
+        AssistChip(onClick = {}, label = { Text(settings.cameraLabel) })
+        AssistChip(
+            onClick = {},
+            label = { Text("剩余 ${storageEstimate.remainingBytes.formatBytes()}") },
+        )
+        AssistChip(
+            onClick = {},
+            label = { Text("预计 ${storageEstimate.estimatedRecordableSeconds.formatRecordableTime()}") },
+        )
     }
 }
 

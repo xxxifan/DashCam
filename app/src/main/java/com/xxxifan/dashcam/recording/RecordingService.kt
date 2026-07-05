@@ -43,6 +43,7 @@ import com.xxxifan.dashcam.camera.CameraSelectionId
 import com.xxxifan.dashcam.camera.toCameraXDynamicRange
 import com.xxxifan.dashcam.camera.toVideoMimeType
 import com.xxxifan.dashcam.data.BitratePreset
+import com.xxxifan.dashcam.data.RecordingAlertStore
 import com.xxxifan.dashcam.data.RecordingEntry
 import com.xxxifan.dashcam.data.RecordingRepository
 import com.xxxifan.dashcam.data.RecordingSettings
@@ -68,6 +69,7 @@ import java.util.UUID
 
 class RecordingService : LifecycleService() {
     private val settingsStore by lazy { RecordingSettingsStore() }
+    private val alertStore by lazy { RecordingAlertStore() }
     private val recordingRepository by lazy { RecordingRepository() }
     private val storageManager by lazy { LoopStorageManager(this, recordingRepository) }
     private val thumbnailManager by lazy { RecordingThumbnailManager(this, recordingRepository) }
@@ -85,6 +87,7 @@ class RecordingService : LifecycleService() {
     private var cameraInterruptionCount = 0
     private var serviceStarted = false
     private var stopRequested = false
+    private var pendingStopAlert: StopAlert? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
@@ -94,6 +97,8 @@ class RecordingService : LifecycleService() {
                 if (!serviceStarted) {
                     serviceStarted = true
                     stopRequested = false
+                    pendingStopAlert = null
+                    alertStore.clearLastStopAlert()
                     startForegroundNotification("正在准备录制")
                     lifecycleScope.launch {
                         startCameraAndRecording()
@@ -120,7 +125,17 @@ class RecordingService : LifecycleService() {
         activeSessionSettings = null
         downgradeState = null
         latestSafetyDecision = null
-        RecordingStateBus.update(RecordingUiState(message = "录制已停止"))
+        val stopAlert = pendingStopAlert
+        RecordingStateBus.update(
+            if (stopAlert != null) {
+                RecordingUiState(
+                    message = stopAlert.message,
+                    fallbackGuidance = stopAlert.fallbackGuidance,
+                )
+            } else {
+                RecordingUiState(message = "录制已停止")
+            },
+        )
         super.onDestroy()
     }
 
@@ -408,6 +423,8 @@ class RecordingService : LifecycleService() {
         activeSessionSettings = null
         downgradeState = null
         latestSafetyDecision = null
+        pendingStopAlert = null
+        alertStore.clearLastStopAlert()
         segmentJob?.cancel()
         val recording = activeRecording
         if (recording != null) {
@@ -429,6 +446,9 @@ class RecordingService : LifecycleService() {
         activeSessionSettings = null
         downgradeState = null
         latestSafetyDecision = null
+        pendingStopAlert = StopAlert(message, fallbackGuidance)
+        alertStore.saveStopAlert(message, fallbackGuidance)
+        Log.w(TAG, "Stopping recording with message: $message")
         RecordingStateBus.update(
             RecordingUiState(
                 message = message,
@@ -462,9 +482,18 @@ class RecordingService : LifecycleService() {
         val decision = DefaultRecordingSafetyPolicy(requested.autoDowngradeEnabled).evaluate(snapshot)
         publishSafetyDecision(decision)
         if (decision.actions.contains(SafetyAction.StopRecording)) {
+            val isStorageStop = decision.reasons.contains(SafetyReason.Storage)
             stopWithMessage(
-                message = decision.message,
-                fallbackGuidance = getString(R.string.recording_emergency_stop_body),
+                message = if (isStorageStop) {
+                    getString(R.string.storage_cleanup_failed_body)
+                } else {
+                    decision.message
+                },
+                fallbackGuidance = if (isStorageStop) {
+                    getString(R.string.storage_insufficient_body)
+                } else {
+                    getString(R.string.recording_emergency_stop_body)
+                },
             )
             return
         }
@@ -727,6 +756,11 @@ class RecordingService : LifecycleService() {
         val settings: RecordingSettings,
         val message: String? = null,
         val downgradeState: RecordingDowngradeState? = null,
+    )
+
+    private data class StopAlert(
+        val message: String,
+        val fallbackGuidance: String?,
     )
 
     companion object {

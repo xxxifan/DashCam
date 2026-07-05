@@ -16,7 +16,7 @@
     <string name="storage_insufficient_title">存储空间不足</string>
     <string name="storage_insufficient_body">当前可用空间不足，无法安全开始录制。请释放空间，或降低画质后重试。</string>
     <string name="storage_quota_too_small_body">可用于录制的空间低于 2GB，已尝试切换到较低画质。</string>
-    <string name="storage_cleanup_failed_body">已清理可删除的视频，但空间仍不足，录制已停止。</string>
+    <string name="storage_cleanup_failed_body">可用于下一段录制的安全空间不足，录制已停止。</string>
     <string name="thermal_notice_body">设备温度升高，录制仍在继续。</string>
     <string name="thermal_downgrade_body">设备温度较高，已降低视频质量以保持录制。</string>
     <string name="thermal_emergency_stop_body">设备温度过高，录制已停止以保护设备。</string>
