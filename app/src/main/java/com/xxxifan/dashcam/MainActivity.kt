@@ -1,13 +1,18 @@
 package com.xxxifan.dashcam
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
 import android.view.ViewGroup
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -27,14 +32,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -44,6 +53,8 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -84,6 +95,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.xxxifan.dashcam.camera.CameraCapabilities
@@ -113,6 +125,7 @@ import com.xxxifan.dashcam.storage.RecordingStorageEstimate
 import com.xxxifan.dashcam.storage.RecordingStorageEstimator
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToLong
 
@@ -172,6 +185,7 @@ private fun DashCamApp(
         val uiState by RecordingStateBus.state.collectAsStateWithLifecycle()
         val entries by recordingRepository.entries.collectAsStateWithLifecycle()
         var settings by remember { mutableStateOf(settingsStore.get()) }
+        var playbackEntry by remember { mutableStateOf<RecordingEntry?>(null) }
         var storageEstimate by remember {
             mutableStateOf(
                 RecordingStorageEstimator.estimate(
@@ -246,77 +260,88 @@ private fun DashCamApp(
             )
         }
 
-        Scaffold(
-            topBar = {
-                AppTopBar(
-                    isRecording = uiState.isRecording,
-                )
-            },
-            bottomBar = {
-                NavigationBar {
-                    NavigationBarItem(
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0 },
-                        icon = { Icon(Icons.Filled.Movie, contentDescription = null) },
-                        label = { Text("录制") },
+        val activePlaybackEntry = playbackEntry
+        if (activePlaybackEntry != null) {
+            VideoPlaybackScreen(
+                entry = activePlaybackEntry,
+                onDismiss = { playbackEntry = null },
+                onShare = { context.shareRecording(activePlaybackEntry) },
+                onExport = { context.exportRecording(activePlaybackEntry) },
+            )
+        } else {
+            Scaffold(
+                topBar = {
+                    AppTopBar(
+                        isRecording = uiState.isRecording,
                     )
-                    NavigationBarItem(
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1 },
-                        icon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
-                        label = { Text("视频") },
+                },
+                bottomBar = {
+                    NavigationBar {
+                        NavigationBarItem(
+                            selected = selectedTab == 0,
+                            onClick = { selectedTab = 0 },
+                            icon = { Icon(Icons.Filled.Movie, contentDescription = null) },
+                            label = { Text("录制") },
+                        )
+                        NavigationBarItem(
+                            selected = selectedTab == 1,
+                            onClick = { selectedTab = 1 },
+                            icon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
+                            label = { Text("视频") },
+                        )
+                        NavigationBarItem(
+                            selected = selectedTab == 2,
+                            onClick = { selectedTab = 2 },
+                            icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                            label = { Text("设置") },
+                        )
+                    }
+                },
+            ) { padding ->
+                val recordingSettings = uiState.activeSettings ?: settings
+                when (selectedTab) {
+                    0 -> RecordingHome(
+                        padding = padding,
+                        stateMessage = uiState.message,
+                        safetyDecision = uiState.safetyDecision,
+                        fallbackGuidance = uiState.fallbackGuidance,
+                        isRecording = uiState.isRecording,
+                        settings = recordingSettings,
+                        storageEstimate = storageEstimate,
+                        onStart = {
+                            if (context.hasRecordingPermissions()) {
+                                showConfirm = true
+                            } else {
+                                requestPermissions()
+                            }
+                        },
+                        onStop = { context.stopRecordingService() },
+                        onOpenSettings = { selectedTab = 2 },
                     )
-                    NavigationBarItem(
-                        selected = selectedTab == 2,
-                        onClick = { selectedTab = 2 },
-                        icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                        label = { Text("设置") },
+                    1 -> LibraryScreen(
+                        padding = padding,
+                        entries = entries,
+                        recordingState = uiState,
+                        onOpenPlayback = { playbackEntry = it },
+                        onDelete = recordingRepository::delete,
+                        onShare = { context.shareRecording(it) },
+                        onExport = { context.exportRecording(it) },
+                    )
+                    2 -> SettingsScreen(
+                        padding = padding,
+                        settings = settings,
+                        isRecording = uiState.isRecording,
+                        downgradeState = uiState.downgradeState,
+                        capabilities = cameraCapabilities,
+                        storageEstimate = storageEstimate,
+                        onSettingsChange = { update ->
+                            settings = settingsStore.update { current ->
+                                update(current).coerceToCapabilities(cameraCapabilities)
+                                    .coerceToStorage(context)
+                            }
+                        },
                     )
                 }
-            },
-        ) { padding ->
-            val recordingSettings = uiState.activeSettings ?: settings
-            when (selectedTab) {
-                0 -> RecordingHome(
-                    padding = padding,
-                    stateMessage = uiState.message,
-                    safetyDecision = uiState.safetyDecision,
-                    fallbackGuidance = uiState.fallbackGuidance,
-                    isRecording = uiState.isRecording,
-                    settings = recordingSettings,
-                    storageEstimate = storageEstimate,
-                    onStart = {
-                        if (context.hasRecordingPermissions()) {
-                            showConfirm = true
-                        } else {
-                            requestPermissions()
-                        }
-                    },
-                    onStop = { context.stopRecordingService() },
-                    onOpenSettings = { selectedTab = 2 },
-                )
-                1 -> LibraryScreen(
-                    padding = padding,
-                    entries = entries,
-                    recordingState = uiState,
-                    onDelete = recordingRepository::delete,
-                    onShare = { context.shareRecording(it) },
-                    onExport = { context.exportRecording(it) },
-                )
-                2 -> SettingsScreen(
-                    padding = padding,
-                    settings = settings,
-                    isRecording = uiState.isRecording,
-                    downgradeState = uiState.downgradeState,
-                    capabilities = cameraCapabilities,
-                    storageEstimate = storageEstimate,
-                    onSettingsChange = { update ->
-                        settings = settingsStore.update { current ->
-                            update(current).coerceToCapabilities(cameraCapabilities)
-                                .coerceToStorage(context)
-                        }
-                    },
-                )
             }
         }
     }
@@ -832,12 +857,12 @@ private fun LibraryScreen(
     padding: PaddingValues,
     entries: List<RecordingEntry>,
     recordingState: RecordingUiState,
+    onOpenPlayback: (RecordingEntry) -> Unit,
     onDelete: (RecordingEntry) -> Unit,
     onShare: (RecordingEntry) -> Unit,
     onExport: (RecordingEntry) -> Unit,
 ) {
     var pendingDelete by remember { mutableStateOf<RecordingEntry?>(null) }
-    var previewEntry by remember { mutableStateOf<RecordingEntry?>(null) }
 
     pendingDelete?.let { entry ->
         DeleteRecordingDialog(
@@ -847,15 +872,6 @@ private fun LibraryScreen(
                 pendingDelete = null
                 onDelete(entry)
             },
-        )
-    }
-
-    previewEntry?.let { entry ->
-        VideoPreviewDialog(
-            entry = entry,
-            onDismiss = { previewEntry = null },
-            onShare = { onShare(entry) },
-            onExport = { onExport(entry) },
         )
     }
 
@@ -903,9 +919,7 @@ private fun LibraryScreen(
             items(dayEntries, key = { it.id }) { entry ->
                 RecordingListItem(
                     entry = entry,
-                    onClick = {
-                        previewEntry = entry
-                    },
+                    onClick = { onOpenPlayback(entry) },
                     onDelete = { pendingDelete = entry },
                     onShare = { onShare(entry) },
                     onExport = { onExport(entry) },
@@ -1051,18 +1065,45 @@ private fun RecordingThumbnail(
 }
 
 @Composable
-private fun VideoPreviewDialog(
+private fun VideoPlaybackScreen(
     entry: RecordingEntry,
     onDismiss: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
 ) {
     val context = LocalContext.current
+    val activity = context.findActivity()
+    var metadata by remember(entry.filePath) { mutableStateOf<VideoMetadata?>(null) }
     val player = remember(entry.filePath) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(context.fileProviderUri(entry.file)))
             prepare()
             playWhenReady = true
+        }
+    }
+    var isPlaying by remember(entry.filePath) { mutableStateOf(false) }
+    var positionMs by remember(entry.filePath) { mutableStateOf(0L) }
+    var bufferedPositionMs by remember(entry.filePath) { mutableStateOf(0L) }
+    var durationMs by remember(entry.filePath) { mutableStateOf(entry.durationMillis) }
+    var playbackSpeed by remember(entry.filePath) { mutableStateOf(1f) }
+
+    BackHandler(onBack = onDismiss)
+
+    LaunchedEffect(entry.filePath) {
+        metadata = withContext(Dispatchers.IO) {
+            entry.file.readVideoMetadata()
+        }
+    }
+
+    DisposableEffect(activity, metadata?.isLandscape) {
+        val previousOrientation = activity?.requestedOrientation
+        if (activity != null && metadata?.isLandscape == true) {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+        onDispose {
+            if (activity != null && previousOrientation != null) {
+                activity.requestedOrientation = previousOrientation
+            }
         }
     }
 
@@ -1072,54 +1113,243 @@ private fun VideoPreviewDialog(
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                entry.file.name,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+    LaunchedEffect(player) {
+        while (true) {
+            isPlaying = player.isPlaying
+            positionMs = player.currentPosition.coerceAtLeast(0L)
+            bufferedPositionMs = player.bufferedPosition.coerceAtLeast(0L)
+            if (player.duration > 0L) {
+                durationMs = player.duration
+            }
+            playbackSpeed = player.playbackParameters.speed
+            delay(250L)
+        }
+    }
+
+    Surface(
+        color = Color.Black,
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .safeDrawingPadding(),
+        ) {
+            VideoPlaybackTopBar(
+                entry = entry,
+                onDismiss = onDismiss,
+                onShare = onShare,
+                onExport = onExport,
             )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center,
+            ) {
                 AndroidView(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f),
+                    modifier = Modifier.fillMaxSize(),
                     factory = {
                         PlayerView(it).apply {
                             this.player = player
-                            useController = true
+                            useController = false
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            )
                         }
                     },
                     update = {
                         it.player = player
                     },
                 )
-                Text(
-                    "${entry.timeLabel()} · ${entry.durationMillis.formatDuration()} · ${entry.sizeBytes.formatBytes()}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            }
+            VideoPlaybackControls(
+                isPlaying = isPlaying,
+                positionMs = positionMs,
+                bufferedPositionMs = bufferedPositionMs,
+                durationMs = durationMs,
+                playbackSpeed = playbackSpeed,
+                onTogglePlayback = {
+                    if (player.isPlaying) {
+                        player.pause()
+                    } else {
+                        if (player.playbackState == Player.STATE_ENDED) {
+                            player.seekTo(0L)
+                        }
+                        player.play()
+                    }
+                },
+                onSeek = { player.seekTo(it) },
+                onSpeedChange = { speed ->
+                    player.setPlaybackSpeed(speed)
+                    playbackSpeed = speed
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun VideoPlaybackTopBar(
+    entry: RecordingEntry,
+    onDismiss: () -> Unit,
+    onShare: () -> Unit,
+    onExport: () -> Unit,
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onDismiss) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = Color.White)
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(
+                entry.file.name,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "${entry.timeLabel()} · ${entry.sizeBytes.formatBytes()}",
+                color = Color(0xFFCBD5E1),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Box {
+            IconButton(onClick = { showMenu = true }) {
+                Icon(Icons.Filled.MoreVert, contentDescription = "更多", tint = Color.White)
+            }
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text("导出") },
+                    leadingIcon = { Icon(Icons.Filled.FileUpload, contentDescription = null) },
+                    onClick = {
+                        showMenu = false
+                        onExport()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("分享") },
+                    leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                    onClick = {
+                        showMenu = false
+                        onShare()
+                    },
                 )
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onExport) {
-                Text("导出")
+        }
+    }
+}
+
+@Composable
+private fun VideoPlaybackControls(
+    isPlaying: Boolean,
+    positionMs: Long,
+    bufferedPositionMs: Long,
+    durationMs: Long,
+    playbackSpeed: Float,
+    onTogglePlayback: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onSpeedChange: (Float) -> Unit,
+) {
+    var pendingSeekMs by remember { mutableStateOf<Long?>(null) }
+    var showSpeedMenu by remember { mutableStateOf(false) }
+    val safeDurationMs = durationMs.coerceAtLeast(1L)
+    val displayPositionMs = (pendingSeekMs ?: positionMs).coerceIn(0L, safeDurationMs)
+    val bufferedPercent = ((bufferedPositionMs.coerceIn(0L, safeDurationMs) * 100L) / safeDurationMs)
+    val bufferedFraction = bufferedPositionMs.toFloat() / safeDurationMs.toFloat()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(3.dp)
+                .background(Color(0xFF1E293B)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(bufferedFraction.coerceIn(0f, 1f))
+                    .height(3.dp)
+                    .background(Color(0xFF64748B)),
+            )
+        }
+        Slider(
+            value = displayPositionMs.toFloat(),
+            onValueChange = { pendingSeekMs = it.toLong() },
+            onValueChangeFinished = {
+                pendingSeekMs?.let(onSeek)
+                pendingSeekMs = null
+            },
+            valueRange = 0f..safeDurationMs.toFloat(),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                displayPositionMs.formatPlaybackTime(),
+                color = Color(0xFFCBD5E1),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "缓冲 $bufferedPercent% · ${safeDurationMs.formatPlaybackTime()}",
+                color = Color(0xFFCBD5E1),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            IconButton(onClick = onTogglePlayback) {
+                Icon(
+                    if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = if (isPlaying) "暂停" else "播放",
+                    tint = Color.White,
+                    modifier = Modifier.size(36.dp),
+                )
             }
-        },
-        dismissButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onShare) {
-                    Text("分享")
+            Box {
+                TextButton(onClick = { showSpeedMenu = true }) {
+                    Text("${playbackSpeed.speedLabel()}x", color = Color.White)
                 }
-                TextButton(onClick = onDismiss) {
-                    Text("关闭")
+                DropdownMenu(
+                    expanded = showSpeedMenu,
+                    onDismissRequest = { showSpeedMenu = false },
+                ) {
+                    listOf(0.5f, 1f, 1.25f, 1.5f, 2f).forEach { speed ->
+                        DropdownMenuItem(
+                            text = { Text("${speed.speedLabel()}x") },
+                            onClick = {
+                                showSpeedMenu = false
+                                onSpeedChange(speed)
+                            },
+                        )
+                    }
                 }
             }
-        },
-    )
+        }
+    }
 }
 
 @Composable
@@ -1207,6 +1437,52 @@ private fun Context.exportRecording(entry: RecordingEntry) {
 private fun Context.fileProviderUri(file: File): Uri =
     FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
 
+private fun Context.findActivity(): Activity? {
+    var current = this
+    while (current is ContextWrapper) {
+        if (current is Activity) {
+            return current
+        }
+        current = current.baseContext
+    }
+    return null
+}
+
+private data class VideoMetadata(
+    val width: Int,
+    val height: Int,
+    val rotation: Int,
+) {
+    val isLandscape: Boolean
+        get() {
+            val rotated = rotation == 90 || rotation == 270
+            val displayWidth = if (rotated) height else width
+            val displayHeight = if (rotated) width else height
+            return displayWidth > displayHeight
+        }
+}
+
+private fun File.readVideoMetadata(): VideoMetadata? {
+    return runCatching {
+        MediaMetadataRetriever().use { retriever ->
+            retriever.setDataSource(absolutePath)
+            val width = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                ?.toIntOrNull()
+                ?: 0
+            val height = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toIntOrNull()
+                ?: 0
+            val rotation = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                ?.toIntOrNull()
+                ?: 0
+            VideoMetadata(width = width, height = height, rotation = rotation)
+        }
+    }.getOrNull()
+}
+
 private fun RecordingSettings.coerceToCapabilities(capabilities: CameraCapabilities): RecordingSettings {
     val camera = capabilities.cameraOptions.firstOrNull { it.id == cameraId }
         ?: capabilities.cameraOptions.firstOrNull()
@@ -1272,6 +1548,26 @@ private fun Long?.formatRecordableTime(): String {
 
 private fun Long.formatDurationNanos(): String =
     (this / 1_000_000L).formatDuration()
+
+private fun Long.formatPlaybackTime(): String {
+    val totalSeconds = this.coerceAtLeast(0L) / 1000L
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%02d:%02d".format(minutes, seconds)
+    }
+}
+
+private fun Float.speedLabel(): String {
+    return if (this % 1f == 0f) {
+        toInt().toString()
+    } else {
+        toString().trimEnd('0').trimEnd('.')
+    }
+}
 
 private fun StabilizationMode.label(): String = when (this) {
     StabilizationMode.Off -> "关"

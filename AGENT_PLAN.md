@@ -754,14 +754,13 @@ Status: Partial.
 - [x] Generate and display cached thumbnails for `READY` recordings.
   - Current state: completed segments generate 320x180 JPEG thumbnails off the main thread after CameraX finalization, and the library lazily backfills the newest visible entries without eager whole-library startup work.
   - Current state: thumbnail files live in app-private cache with a schema/version/source fingerprint, duplicate generation for the same recording is coalesced, decoding is limited to one job at a time, stale cache files are cleaned, and list rows reserve a fixed 16:9 thumbnail slot with a stable placeholder.
-- [~] Implement playback preview with Media3/ExoPlayer.
-  - Current state: playback exists in a dialog preview.
-  - Required next step: replace dialog preview with a full-screen playback/detail screen.
-- [ ] Add full-screen playback controls.
-  - Desired behavior: tap a library item to open full-screen playback with play/pause, seek bar, current time, total duration, buffered progress, and playback speed menu.
-- [ ] Auto-rotate playback for landscape videos.
-  - Desired behavior: detect video dimensions/rotation from metadata/player track info, enter the best matching playback orientation for the full-screen player, and restore the previous orientation when leaving playback.
-- [ ] Add playback overflow menu for export and share actions.
+- [x] Implement playback preview with Media3/ExoPlayer.
+  - Current state: tapping a finalized library item opens a full-screen playback/detail screen backed by Media3/ExoPlayer instead of a dialog preview.
+- [x] Add full-screen playback controls.
+  - Current state: full-screen playback includes play/pause, seek bar, current time, total duration, buffered progress, and playback speed menu.
+- [x] Auto-rotate playback for landscape videos.
+  - Current state: the playback screen reads video width/height/rotation metadata, temporarily enters landscape for landscape videos, and restores the previous orientation when leaving playback.
+- [x] Add playback overflow menu for export and share actions.
 - [x] Implement delete with confirmation.
 - [x] Do not implement lock/protect in v1.
 - [ ] Implement export to MediaStore.
@@ -833,10 +832,10 @@ Current anchors:
 - [x] Playback, delete, export, share, loop deletion, and multi-select ignore `RECORDING` and `FINALIZING` segments.
 - [x] Recording library shows thumbnails for completed videos.
 - [x] Thumbnail generation is off-main-thread, cached on disk, bounded in concurrency, and does not run for unfinished segments.
-- [ ] Tapping a completed recording opens a full-screen player, not a dialog preview.
-- [ ] Full-screen playback supports seek bar, current time, total duration, buffered progress, play/pause, and playback speed selection.
-- [ ] Landscape videos can be viewed in a landscape full-screen playback orientation, and the app restores normal orientation after exiting playback.
-- [ ] Playback provides export and share actions from an overflow menu.
+- [x] Tapping a completed recording opens a full-screen player, not a dialog preview.
+- [x] Full-screen playback supports seek bar, current time, total duration, buffered progress, play/pause, and playback speed selection.
+- [x] Landscape videos can be viewed in a landscape full-screen playback orientation, and the app restores normal orientation after exiting playback.
+- [x] Playback provides export and share actions from an overflow menu.
 - [ ] Exported recordings appear in user-visible media storage.
 - [ ] Export saves a copy to public external media storage through MediaStore instead of launching an external app chooser.
 - [x] Sharing works through Android share sheet.
