@@ -747,8 +747,10 @@ Status: Partial.
 
 - [x] Implement recording list in reverse chronological order.
 - [x] Add date sticky headers.
-- [ ] Show the current active segment as a read-only recording status row instead of a normal library item.
-- [ ] Exclude `RECORDING` and `FINALIZING` segments from playback, delete, export, share, loop deletion, and multi-select paths.
+- [x] Show the current active segment as a read-only recording status row instead of a normal library item.
+  - Current state: the library shows the active segment from recording UI state as a non-clickable row with written duration/bytes and no playback/delete/export/share actions.
+- [x] Exclude `RECORDING` and `FINALIZING` segments from playback, delete, export, share, loop deletion, and multi-select paths.
+  - Current state: active segments are represented only by recording UI state and are not persisted into the library repository until CameraX finalization succeeds. The active row is read-only, so playback, delete, export, share, and loop deletion operate only on finalized repository entries.
 - [ ] Generate and display cached thumbnails for `READY` recordings.
   - Desired behavior: create thumbnails off the main thread after segment finalization, cache them as regenerable derived files, coalesce duplicate work, limit decode concurrency, and reserve a fixed thumbnail slot in the list.
   - Performance guardrails: no thumbnail work during Compose composition, no full-resolution frame decode for list rows, no eager whole-library generation on app startup, and no thumbnail probing of unfinished segments.

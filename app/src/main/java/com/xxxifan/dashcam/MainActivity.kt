@@ -100,6 +100,7 @@ import com.xxxifan.dashcam.recording.RecordingService
 import com.xxxifan.dashcam.recording.RecordingDowngradeReason
 import com.xxxifan.dashcam.recording.RecordingDowngradeState
 import com.xxxifan.dashcam.recording.RecordingStateBus
+import com.xxxifan.dashcam.recording.RecordingUiState
 import com.xxxifan.dashcam.safety.RecordingSafetyDecision
 import com.xxxifan.dashcam.storage.LoopStorageManager
 import com.xxxifan.dashcam.storage.RecordingStorageEstimate
@@ -281,6 +282,7 @@ private fun DashCamApp(
                 1 -> LibraryScreen(
                     padding = padding,
                     entries = entries,
+                    recordingState = uiState,
                     onDelete = recordingRepository::delete,
                     onShare = { context.shareRecording(it) },
                     onExport = { context.exportRecording(it) },
@@ -813,6 +815,7 @@ private fun SettingSwitchRow(
 private fun LibraryScreen(
     padding: PaddingValues,
     entries: List<RecordingEntry>,
+    recordingState: RecordingUiState,
     onDelete: (RecordingEntry) -> Unit,
     onShare: (RecordingEntry) -> Unit,
     onExport: (RecordingEntry) -> Unit,
@@ -840,7 +843,7 @@ private fun LibraryScreen(
         )
     }
 
-    if (entries.isEmpty()) {
+    if (entries.isEmpty() && !recordingState.isRecording) {
         Box(
             modifier = Modifier
                 .padding(padding)
@@ -860,6 +863,11 @@ private fun LibraryScreen(
             .fillMaxSize(),
         contentPadding = PaddingValues(bottom = 16.dp),
     ) {
+        if (recordingState.isRecording) {
+            item(key = "active-recording") {
+                ActiveRecordingListItem(recordingState)
+            }
+        }
         grouped.forEach { (date, dayEntries) ->
             stickyHeader {
                 Surface(
@@ -885,6 +893,52 @@ private fun LibraryScreen(
                     onDelete = { pendingDelete = entry },
                     onShare = { onShare(entry) },
                     onExport = { onExport(entry) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActiveRecordingListItem(
+    state: RecordingUiState,
+) {
+    val fileName = state.currentSegmentPath
+        ?.let { File(it).name }
+        ?: "当前片段"
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7ED)),
+        modifier = Modifier
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Movie,
+                contentDescription = null,
+                modifier = Modifier.size(36.dp),
+                tint = MaterialTheme.colorScheme.tertiary,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    fileName,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "正在写入 · ${state.recordedDurationNanos.formatDurationNanos()} · ${state.recordedBytes.formatBytes()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "片段完成后才可播放、删除、导出或分享",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -1166,6 +1220,9 @@ private fun Long?.formatRecordableTime(): String {
         else -> "不足1分钟"
     }
 }
+
+private fun Long.formatDurationNanos(): String =
+    (this / 1_000_000L).formatDuration()
 
 private fun StabilizationMode.label(): String = when (this) {
     StabilizationMode.Off -> "关"
