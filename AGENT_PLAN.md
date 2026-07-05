@@ -20,8 +20,8 @@ Confirmed product defaults:
 - Minimum OS baseline: Android 16 / API 36, matching Pixel 10a's launch Android version.
 - Default audio recording: on.
 - Default segment duration: 2 minutes.
-- Default quality: 1080p30.
-- Default codec: auto.
+- Default quality: 720p30 standard bitrate.
+- Default codec: auto, where auto is an app-level profile selector instead of simply leaving CameraX unset.
 - Default storage mode: use maximum allowed recording space while reserving 10% of the storage volume.
 - Default resource-pressure auto-downgrade: on.
 - v1 does not include manual lock/protect-current-segment.
@@ -143,6 +143,13 @@ Suggested components:
   - Tracks saved segments and metadata.
   - Reserves lock/protect metadata for after v1.
   - Supports list, delete, export, and share operations.
+
+- `RecordingThumbnailManager`
+  - Generates thumbnails for completed `READY` segments only.
+  - Uses platform video thumbnail APIs off the main thread.
+  - Maintains an app-private disk cache keyed by recording ID, source file fingerprint, and thumbnail schema version.
+  - Coalesces duplicate requests and limits concurrent decoding so library scrolling cannot spawn repeated full-video work.
+  - Deletes cached thumbnails when the source recording is deleted, and periodically cleans orphan thumbnail files.
 
 - `LoopStorageManager`
   - Creates the hidden recording directory.
@@ -297,6 +304,9 @@ Behavior:
 
 - Recordings are hidden from gallery apps by default.
 - Export copies selected files into MediaStore, such as `Movies/DashCam`.
+- Export means saving a copy to user-visible public external media storage, not asking another app to open the private recording file.
+- On Android 16/API 36, use MediaStore insertion with pending/complete state rather than broad storage permissions or raw public path writes.
+- The export flow should handle duplicate filenames, partial-copy cleanup, success/error feedback, and exported metadata updates.
 - Sharing uses FileProvider `content://` URIs.
 - Do not expose raw private file paths to other apps.
 
@@ -320,6 +330,7 @@ Metadata per segment:
 - Audio enabled.
 - Safety downgrade state, if any.
 - Segment state: `RECORDING`, `FINALIZING`, `READY`, or `FAILED`.
+- Thumbnail cache path, generation state, thumbnail schema version, and source file fingerprint when available.
 - Locked/protected flag reserved for after v1.
 - Exported flag.
 
@@ -330,6 +341,50 @@ Segment state behavior:
 - `READY`: recording is complete, metadata is valid, and normal playback/delete/export/share operations are allowed.
 - `FAILED`: recording did not produce a valid segment. Show a clear state and allow safe cleanup only.
 - Thumbnail generation, duration probing, playback, export, share, delete, loop deletion, and multi-select must only operate on `READY` segments unless a future feature explicitly defines another safe path.
+
+## Video Thumbnails
+
+Requirements:
+
+- Generate thumbnails for completed recordings and show them in the recording library.
+- Generate thumbnails only after a segment reaches `READY`.
+- Never decode video frames from a `RECORDING` or `FINALIZING` segment.
+- Thumbnail failure must not block recording, playback, export, share, or deletion.
+- Missing or failed thumbnails should fall back to a stable placeholder while allowing retry later.
+
+Generation strategy:
+
+- Prefer platform APIs such as `ThumbnailUtils.createVideoThumbnail(file, Size, CancellationSignal)` because the app targets API 36+.
+- Request the bitmap at the UI target size instead of decoding a full-resolution frame.
+- Suggested list thumbnail target: 320x180 pixels for 16:9 recordings.
+- If a detail/playback screen needs a larger still later, generate a separate larger cache variant instead of upscaling list thumbnails.
+- Choose a stable frame slightly after the beginning when possible, such as around 1 second or 10% into the video, to avoid all-black startup frames.
+- Verify rotation/orientation handling on device; regenerate or transform thumbnails if platform output does not match playback orientation.
+- Run generation on `Dispatchers.IO` from service/repository work, never from Compose composition or the main thread.
+- Use bounded concurrency, initially one thumbnail decode at a time, because video frame extraction can be CPU, IO, and codec heavy.
+- Coalesce duplicate generation requests for the same recording ID.
+- Add cancellation for UI-driven backfill jobs when the library screen leaves composition, while allowing post-finalize generation to complete in the background.
+
+Cache strategy:
+
+- Store thumbnails in an app-private thumbnail cache directory, such as `cache/recording_thumbnails`.
+- Treat thumbnails as regenerable derived data; the recording file and metadata remain the source of truth.
+- Cache keys should include recording ID, source file length, source last-modified timestamp, and thumbnail schema version.
+- Persist thumbnail metadata in MMKV alongside recording metadata, or derive it deterministically from the cache key if the file exists.
+- Regenerate thumbnails when the source fingerprint or schema version changes.
+- Delete the thumbnail file when its recording is deleted.
+- Periodically remove orphan thumbnails whose source recording metadata no longer exists.
+
+Display performance:
+
+- The library item should reserve a fixed 16:9 thumbnail slot so loading state never shifts row height.
+- Load thumbnail image files asynchronously and decode at display size.
+- Do not hand a video file URI directly to the list image loader if that causes repeated frame extraction during scrolling.
+- Backfill thumbnails lazily for older recordings, prioritizing visible and near-visible items.
+- Avoid eager generation for the entire library on app startup.
+- Keep placeholders visually lightweight: icon or neutral surface, not a spinner per row.
+- Use stable item keys in lazy lists so thumbnail state is reused during scroll and date grouping changes.
+- Keep memory pressure low by caching small bitmap files and relying on the image loader's normal in-memory cache for currently visible rows.
 
 ## Loop Recording
 
@@ -365,9 +420,10 @@ Segment duration rationale:
 Core v1 settings:
 
 - Recording mode: lock-screen preferred / black-screen fallback.
-- Resolution: auto, 720p, 1080p, 4K where supported. Default: 1080p.
+- Resolution: auto, 720p, 1080p, 4K where supported. Default: 720p.
 - Fps: auto, 24, 30, 60 where supported.
 - Codec: auto, H.264, H.265/HEVC, and any other supported codec exposed by the platform. Default: auto.
+- Bitrate/quality preset: auto, space saver, standard, high quality, and possibly custom. Default: standard.
 - Audio: off/on. Default: on.
 - Stabilization: off, standard, enhanced/preview stabilization where supported. Default: standard.
 - Pixel-oriented stabilization UI should expose three choices when supported: off, standard, and enhanced/active.
@@ -386,6 +442,43 @@ Advanced settings to consider:
 - HDR/HLG/10-bit options where supported.
 - Bitrate preset or quality profile if CameraX/Media APIs expose a stable path.
 
+## Bitrate And Auto Quality Policy
+
+CameraX `Recorder.Builder` exposes target video/audio bitrate APIs in the current dependency version, so v1 should prefer recording-time bitrate control over post-recording compression.
+
+Why H.265 may be larger than H.264 in real tests:
+
+- H.265 only improves size when the encoder, selected profile, scene content, bitrate control mode, and quality target are comparable.
+- Device encoders may choose different default bitrate ladders for H.265 and H.264.
+- CameraX/MediaRecorder profile defaults may prioritize quality or encoder stability over minimum file size.
+- Complex road scenes, motion, noise, HDR, stabilization, or low light can push H.265 to a higher bitrate.
+- Therefore, codec choice alone must not be treated as a guaranteed storage-saving option. Actual segment size should be measured and used to calibrate future estimates.
+
+Suggested bitrate preset table:
+
+| Preset | 720p30 | 1080p30 | 1080p60 | 4K30 | Intent |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Space saver | 4 Mbps | 8 Mbps | 14 Mbps | 28 Mbps | Longest loop duration |
+| Standard | 8 Mbps | 16 Mbps | 28 Mbps | 55 Mbps | Recommended dashcam balance |
+| High quality | 12 Mbps | 25 Mbps | 42 Mbps | 80 Mbps | Detail priority |
+
+Auto quality selection:
+
+- Auto is an app-level selection mode, not merely CameraX "unset".
+- Target minimum recordable duration: 8 hours.
+- Evaluate supported profiles against the currently configured loop quota / remaining safe recording space.
+- Candidate dimensions include resolution, fps, bitrate preset, codec, HDR, and stabilization compatibility.
+- Prefer the best candidate whose estimated recordable duration is at least 8 hours.
+- If multiple candidates satisfy 8 hours, rank by overall quality:
+  - Prefer higher resolution first.
+  - Then prefer higher fps where useful and supported.
+  - Then prefer higher bitrate preset.
+  - Then prefer HDR/dynamic range if it remains compatible and does not break the 8-hour target.
+- Example: if standard 1080p30 and high-quality 720p30 both meet 8 hours, choose standard 1080p30 because resolution wins before bitrate preset.
+- If no candidate can reach 8 hours, choose the lowest viable profile rather than blocking immediately.
+- Current preferred default profile before auto tuning is implemented: 720p30 standard bitrate.
+- Persist the user's explicit selections separately from the auto-resolved active profile, so the UI can explain what Auto selected.
+
 ## UI Plan
 
 Screens:
@@ -395,7 +488,7 @@ Screens:
 - Black-screen recording screen.
 - Settings screen.
 - Recording library screen.
-- Playback/detail screen.
+- Fullscreen playback/detail screen.
 - Future clipping/editing entry screen.
 
 UI implementation:
@@ -430,6 +523,7 @@ Library should support:
 - The active status row should show `Recording`/`Finalizing` state and live elapsed time from `RecordingService`, not from repeatedly probing the partially written media file.
 - The unfinished current segment must not appear as a normal recording item before it becomes `READY`.
 - `RECORDING` and `FINALIZING` segments must not allow playback, delete, export, share, or multi-select actions.
+- Thumbnail with fixed 16:9 slot, generated/cached only for `READY` segments.
 - File duration, size, and quality.
 - Playback.
 - Delete.
@@ -437,6 +531,34 @@ Library should support:
 - Export.
 - Share.
 - Multi-select later if not in first slice.
+
+Playback should support:
+
+- Tapping a `READY` recording opens a full-screen playback screen instead of an in-dialog preview.
+- Use Media3/ExoPlayer for playback.
+- Keep the player immersive and focused, with lightweight overlay controls.
+- Auto-rotate the playback experience for landscape videos so horizontal recordings can fill the screen naturally.
+- Restore the app's normal orientation behavior when leaving playback.
+- Read video dimensions/rotation from media metadata or the player track format rather than guessing from the filename.
+- Provide play/pause, seek bar, current time, total duration, and buffered progress.
+- Provide playback speed choices, such as 0.5x, 1x, 1.5x, and 2x.
+- Provide an overflow menu with export and share actions.
+- Keep export/share/delete/playback actions gated to `READY` segments only.
+
+Export should support:
+
+- Save selected recordings to public external media storage, such as `Movies/DashCam`, via MediaStore.
+- Do not present export as "open with external app"; that behavior belongs to sharing or an optional "open exported file" follow-up.
+- Show clear success, failure, and already-exported states.
+- Keep the original app-private recording as the loop-recording source of truth.
+- Mark exported metadata after the MediaStore copy succeeds.
+
+Future casting should support:
+
+- Post-v1 playback casting to external displays.
+- Miracast or system screen-cast style playback where available.
+- DLNA discovery/control as a later compatibility path for TVs, boxes, and in-car displays.
+- Casting must be optional and must not block local playback, export, or share.
 
 ## User-Facing Copy Draft
 
@@ -577,9 +699,11 @@ Status: Mostly done.
 - [x] Populate supported HDR/dynamic range options.
 - [x] Populate back lens options and expose lens selection only in settings.
 - [x] Apply selected settings to new recordings.
+- [ ] Implement bitrate/quality preset settings and apply them with CameraX target bitrate APIs.
+- [ ] Implement app-level Auto quality selection based on remaining safe recording space and the 8-hour target.
 - [~] Handle unsupported combinations gracefully.
   - Current state: saved settings are coerced to runtime capabilities and CameraX fallback quality strategy is used.
-  - Remaining: validate cross-feature combinations such as physical ultra-wide + 4K/60fps + enhanced stabilization, and downgrade/disable invalid combinations before recording.
+  - Remaining: validate cross-feature combinations such as physical ultra-wide + 4K/60fps + enhanced stabilization, bitrate preset, codec, and HDR, then downgrade/disable invalid combinations before recording.
 
 Current anchors:
 
@@ -618,15 +742,25 @@ Status: Partial.
 - [x] Add date sticky headers.
 - [ ] Show the current active segment as a read-only recording status row instead of a normal library item.
 - [ ] Exclude `RECORDING` and `FINALIZING` segments from playback, delete, export, share, loop deletion, and multi-select paths.
-- [x] Implement playback preview with Media3/ExoPlayer.
+- [ ] Generate and display cached thumbnails for `READY` recordings.
+  - Desired behavior: create thumbnails off the main thread after segment finalization, cache them as regenerable derived files, coalesce duplicate work, limit decode concurrency, and reserve a fixed thumbnail slot in the list.
+  - Performance guardrails: no thumbnail work during Compose composition, no full-resolution frame decode for list rows, no eager whole-library generation on app startup, and no thumbnail probing of unfinished segments.
+- [~] Implement playback preview with Media3/ExoPlayer.
+  - Current state: playback exists in a dialog preview.
+  - Required next step: replace dialog preview with a full-screen playback/detail screen.
+- [ ] Add full-screen playback controls.
+  - Desired behavior: tap a library item to open full-screen playback with play/pause, seek bar, current time, total duration, buffered progress, and playback speed menu.
+- [ ] Auto-rotate playback for landscape videos.
+  - Desired behavior: detect video dimensions/rotation from metadata/player track info, enter the best matching playback orientation for the full-screen player, and restore the previous orientation when leaving playback.
+- [ ] Add playback overflow menu for export and share actions.
 - [x] Implement delete with confirmation.
 - [x] Do not implement lock/protect in v1.
 - [ ] Implement export to MediaStore.
   - Current state: export action opens a chooser with a private FileProvider URI.
-  - Required next step: copy selected recording into user-visible `Movies/DashCam` via MediaStore and update exported metadata.
+  - Required next step: save a copy into public external media storage, such as `Movies/DashCam`, via MediaStore and update exported metadata only after the copy succeeds.
+  - Export must not be implemented as "open with external app"; sharing/opening remains a separate action.
 - [x] Implement share via FileProvider.
 - [ ] Add clipping/editing placeholder entry.
-- [ ] Add richer playback/detail screen if separate detail view is desired beyond the current preview dialog.
 
 Current anchors:
 
@@ -656,6 +790,22 @@ Current anchors:
 - Use connected Pixel target with `adb`.
 - Record tested app version, settings, elapsed duration, segment count, and failures in this document or a dedicated test log.
 
+### Phase 8: Casting And External Playback
+
+Status: Future.
+
+- [deferred] Add Miracast/system cast entry from playback.
+  - Desired behavior: allow the user to mirror or cast playback to external displays when the device and OS expose a supported path.
+- [deferred] Add DLNA discovery and playback control.
+  - Desired behavior: discover compatible TVs/boxes/in-car receivers, send selected recording playback, and keep local playback as the fallback.
+- [deferred] Validate casting privacy and network behavior.
+  - Desired behavior: casting is explicit, user-initiated, and never exposes private recordings without confirmation.
+
+Current anchors:
+
+- Playback/detail screen once implemented.
+- Media3 playback integration.
+
 ## Acceptance Criteria
 
 - [x] User can start recording from foreground UI.
@@ -672,8 +822,16 @@ Current anchors:
 - [x] Default recordings do not appear in gallery apps.
 - [ ] The unfinished active segment is never exposed as a normal library item; it may appear only as a read-only live status row.
 - [ ] Playback, delete, export, share, loop deletion, and multi-select ignore `RECORDING` and `FINALIZING` segments.
+- [ ] Recording library shows thumbnails for completed videos.
+- [ ] Thumbnail generation is off-main-thread, cached on disk, bounded in concurrency, and does not run for unfinished segments.
+- [ ] Tapping a completed recording opens a full-screen player, not a dialog preview.
+- [ ] Full-screen playback supports seek bar, current time, total duration, buffered progress, play/pause, and playback speed selection.
+- [ ] Landscape videos can be viewed in a landscape full-screen playback orientation, and the app restores normal orientation after exiting playback.
+- [ ] Playback provides export and share actions from an overflow menu.
 - [ ] Exported recordings appear in user-visible media storage.
+- [ ] Export saves a copy to public external media storage through MediaStore instead of launching an external app chooser.
 - [x] Sharing works through Android share sheet.
+- [deferred] Playback can later cast through Miracast/system cast or DLNA after explicit user action.
 - [ ] Safety monitor can notify about thermal, battery, and storage pressure.
 - [ ] Auto-downgrade setting changes behavior under pressure.
 - [ ] Emergency thermal/storage/battery conditions stop recording even when auto-downgrade is disabled.
@@ -699,8 +857,8 @@ Current anchors:
 6. Default storage quota: maximum safe recording space.
 7. Minimum storage reserve: 10% of storage volume.
 8. Custom storage quota range: 2GB to available space after reserve.
-9. Default recording quality: 1080p30.
-10. Default codec: auto.
+9. Default recording quality: 720p30 standard bitrate.
+10. Default codec: auto, resolved by the app-level auto quality policy rather than blindly leaving CameraX bitrate/profile unset.
 11. Resource-pressure auto-downgrade default: on.
 12. Lock/protect-current-segment: not included in v1.
 13. Persistence: MMKV for settings and lightweight recording metadata.
@@ -711,6 +869,9 @@ Current anchors:
 18. Recording library: reverse chronological list with date sticky headers.
 19. Active recording visibility: show the unfinished current segment only as a read-only live status row, never as a normal library item.
 20. Segment operations: playback, delete, export, share, loop deletion, and multi-select are allowed only for `READY` segments.
+21. Video preview target: full-screen playback/detail screen instead of dialog preview.
+22. Export target: public external media storage through MediaStore, such as `Movies/DashCam`, not an external-app-open chooser.
+23. Future casting: support Miracast/system cast and DLNA after local playback/export/share are solid.
 
 ## Details To Confirm Before Implementation
 
