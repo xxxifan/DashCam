@@ -11,7 +11,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.os.BatteryManager
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import android.util.Range
 import androidx.camera.camera2.interop.Camera2CameraInfo
@@ -35,15 +37,19 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.xxxifan.dashcam.MainActivity
 import com.xxxifan.dashcam.R
+import com.xxxifan.dashcam.camera.CameraCapabilities
+import com.xxxifan.dashcam.camera.CameraCapabilitiesRepository
 import com.xxxifan.dashcam.camera.CameraSelectionId
 import com.xxxifan.dashcam.camera.toCameraXDynamicRange
 import com.xxxifan.dashcam.camera.toVideoMimeType
+import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.RecordingEntry
 import com.xxxifan.dashcam.data.RecordingRepository
 import com.xxxifan.dashcam.data.RecordingSettings
 import com.xxxifan.dashcam.data.RecordingSettingsStore
 import com.xxxifan.dashcam.data.StabilizationMode
 import com.xxxifan.dashcam.storage.LoopStorageManager
+import com.xxxifan.dashcam.storage.RecordingStorageEstimator
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.guava.await
@@ -61,7 +67,12 @@ class RecordingService : LifecycleService() {
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
     private var segmentJob: Job? = null
+    private var healthMonitorJob: Job? = null
     private var currentSegment: SegmentContext? = null
+    private var requestedSessionSettings: RecordingSettings? = null
+    private var activeSessionSettings: RecordingSettings? = null
+    private var downgradeState: RecordingDowngradeState? = null
+    private var cameraInterruptionCount = 0
     private var serviceStarted = false
     private var stopRequested = false
 
@@ -90,10 +101,14 @@ class RecordingService : LifecycleService() {
 
     override fun onDestroy() {
         segmentJob?.cancel()
+        healthMonitorJob?.cancel()
         if (!stopRequested) {
             activeRecording?.stop()
         }
         activeRecording = null
+        requestedSessionSettings = null
+        activeSessionSettings = null
+        downgradeState = null
         RecordingStateBus.update(RecordingUiState(message = "录制已停止"))
         super.onDestroy()
     }
@@ -115,15 +130,30 @@ class RecordingService : LifecycleService() {
             stopWithMessage("缺少相机权限")
             return
         }
-        val settings = settingsStore.get()
-        if (settings.audioEnabled && !hasAudioPermission()) {
+        val requestedSettings = settingsStore.get()
+        if (requestedSettings.audioEnabled && !hasAudioPermission()) {
             stopWithMessage("缺少麦克风权限")
             return
         }
-        if (!storageManager.ensureSpaceForNextSegment(settings)) {
+        val capabilities = CameraCapabilitiesRepository(this).capabilities()
+        val resolvedSettings = RecordingQualityResolver.resolveAutoQuality(
+            context = this,
+            requested = requestedSettings,
+            capabilities = capabilities,
+        )
+        val startupSettings = resolveStartupSettings(
+            requested = resolvedSettings,
+            capabilities = capabilities,
+            autoResolved = requestedSettings.bitratePreset == BitratePreset.Auto,
+        )
+        if (startupSettings == null) {
             stopWithMessage(getString(R.string.storage_insufficient_body))
             return
         }
+        val settings = startupSettings.settings
+        requestedSessionSettings = requestedSettings
+        activeSessionSettings = settings
+        downgradeState = startupSettings.downgradeState
 
         val provider = ProcessCameraProvider.getInstance(this).await()
         val recorderBuilder = Recorder.Builder()
@@ -151,10 +181,47 @@ class RecordingService : LifecycleService() {
             capture,
         )
         videoCapture = capture
-        startNewSegment(settings)
+        startNewSegment(settings, startupSettings.message)
+        startHealthMonitoring()
     }
 
-    private fun startNewSegment(settings: RecordingSettings) {
+    private fun resolveStartupSettings(
+        requested: RecordingSettings,
+        capabilities: CameraCapabilities,
+        autoResolved: Boolean,
+    ): StartupSettings? {
+        val autoMessage = if (autoResolved) {
+            "自动质量已选择 ${requested.resolution}${requested.frameRate}fps ${requested.bitratePreset.label()}。"
+        } else {
+            null
+        }
+        if (storageManager.ensureSpaceForNextSegment(requested)) {
+            return StartupSettings(requested, autoMessage)
+        }
+        if (!requested.autoDowngradeEnabled) {
+            return null
+        }
+        val fallback = RecordingStartupFallbackPolicy
+            .fallbackCandidates(requested, capabilities)
+            .firstOrNull { storageManager.ensureSpaceForNextSegment(it) }
+            ?: return null
+        val downgradeState = RecordingDowngradeState(
+            reasons = setOf(RecordingDowngradeReason.StartupStorage),
+            requestedSettings = requested,
+            activeSettings = fallback,
+            message = storageDowngradeMessage(fallback),
+        )
+        return StartupSettings(
+            settings = fallback,
+            message = downgradeState.message,
+            downgradeState = downgradeState,
+        )
+    }
+
+    private fun startNewSegment(
+        settings: RecordingSettings,
+        startupMessage: String? = null,
+    ) {
         val capture = videoCapture ?: return
         if (!storageManager.ensureSpaceForNextSegment(settings)) {
             stopWithMessage(getString(R.string.storage_cleanup_failed_body))
@@ -174,15 +241,19 @@ class RecordingService : LifecycleService() {
             handleRecordEvent(event)
         }
 
+        val recordingMessage = startupMessage ?: "正在录制 ${context.file.name}"
         RecordingStateBus.update(
             RecordingUiState(
                 isRecording = true,
-                message = "正在录制 ${context.file.name}",
+                message = recordingMessage,
+                activeSettings = settings,
+                downgradeState = downgradeState,
+                fallbackGuidance = null,
                 startedAtMillis = context.startedAtMillis,
                 currentSegmentPath = context.file.absolutePath,
             ),
         )
-        updateNotification("正在录制，锁屏后将尽量继续")
+        updateNotification(startupMessage ?: "正在录制，锁屏后将尽量继续")
         scheduleSegmentRotation(settings)
     }
 
@@ -209,6 +280,9 @@ class RecordingService : LifecycleService() {
             RecordingUiState(
                 isRecording = true,
                 message = "正在录制 ${segment.file.name}",
+                activeSettings = segment.settings,
+                downgradeState = downgradeState,
+                fallbackGuidance = null,
                 startedAtMillis = segment.startedAtMillis,
                 currentSegmentPath = segment.file.absolutePath,
                 recordedBytes = event.recordingStats.numBytesRecorded,
@@ -224,6 +298,7 @@ class RecordingService : LifecycleService() {
         activeRecording = null
 
         if (!event.hasError() && segment.file.exists() && segment.file.length() > 0L) {
+            cameraInterruptionCount = 0
             recordingRepository.add(
                 RecordingEntry(
                     id = segment.id,
@@ -234,6 +309,7 @@ class RecordingService : LifecycleService() {
                     resolution = segment.settings.resolution,
                     frameRate = segment.settings.frameRate,
                     codec = segment.settings.codec,
+                    bitratePreset = segment.settings.bitratePreset,
                     dynamicRange = segment.settings.dynamicRange,
                     audioEnabled = segment.settings.audioEnabled,
                     stabilizationMode = segment.settings.stabilizationMode,
@@ -242,8 +318,12 @@ class RecordingService : LifecycleService() {
                 ),
             )
             if (serviceStarted && !stopRequested) {
-                startNewSegment(settingsStore.get())
+                startNewSegment(activeSessionSettings ?: settingsStore.get())
             } else {
+                healthMonitorJob?.cancel()
+                requestedSessionSettings = null
+                activeSessionSettings = null
+                downgradeState = null
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -252,7 +332,40 @@ class RecordingService : LifecycleService() {
             if (segment.file.length() == 0L) {
                 segment.file.delete()
             }
-            stopWithMessage("录制失败：${event.error}")
+            stopWithMessage(
+                message = recordingErrorMessage(event),
+                fallbackGuidance = fallbackGuidanceFor(event),
+            )
+        }
+    }
+
+    private fun recordingErrorMessage(event: VideoRecordEvent.Finalize): String {
+        return when (event.error) {
+            VideoRecordEvent.Finalize.ERROR_SOURCE_INACTIVE -> {
+                cameraInterruptionCount += 1
+                if (cameraInterruptionCount >= CAMERA_INTERRUPTION_WARNING_THRESHOLD) {
+                    getString(R.string.recording_lock_screen_unstable_body)
+                } else {
+                    "录制被系统相机中断，请重新开始录制。"
+                }
+            }
+            VideoRecordEvent.Finalize.ERROR_INSUFFICIENT_STORAGE -> getString(R.string.storage_cleanup_failed_body)
+            VideoRecordEvent.Finalize.ERROR_ENCODING_FAILED,
+            VideoRecordEvent.Finalize.ERROR_RECORDER_ERROR,
+            VideoRecordEvent.Finalize.ERROR_NO_VALID_DATA,
+            -> getString(R.string.recording_pipeline_unstable_body)
+            else -> "录制失败：${event.error}"
+        }
+    }
+
+    private fun fallbackGuidanceFor(event: VideoRecordEvent.Finalize): String? {
+        return when (event.error) {
+            VideoRecordEvent.Finalize.ERROR_SOURCE_INACTIVE -> getString(R.string.recording_lock_screen_fallback_guidance)
+            VideoRecordEvent.Finalize.ERROR_ENCODING_FAILED,
+            VideoRecordEvent.Finalize.ERROR_RECORDER_ERROR,
+            VideoRecordEvent.Finalize.ERROR_NO_VALID_DATA,
+            -> getString(R.string.recording_pipeline_fallback_guidance)
+            else -> null
         }
     }
 
@@ -273,6 +386,10 @@ class RecordingService : LifecycleService() {
     private fun stopRecordingAndSelf() {
         serviceStarted = false
         stopRequested = true
+        healthMonitorJob?.cancel()
+        requestedSessionSettings = null
+        activeSessionSettings = null
+        downgradeState = null
         segmentJob?.cancel()
         val recording = activeRecording
         if (recording != null) {
@@ -283,10 +400,22 @@ class RecordingService : LifecycleService() {
         }
     }
 
-    private fun stopWithMessage(message: String) {
+    private fun stopWithMessage(
+        message: String,
+        fallbackGuidance: String? = null,
+    ) {
         serviceStarted = false
         stopRequested = true
-        RecordingStateBus.update(RecordingUiState(message = message))
+        healthMonitorJob?.cancel()
+        requestedSessionSettings = null
+        activeSessionSettings = null
+        downgradeState = null
+        RecordingStateBus.update(
+            RecordingUiState(
+                message = message,
+                fallbackGuidance = fallbackGuidance,
+            ),
+        )
         updateNotification(message)
         segmentJob?.cancel()
         val recording = activeRecording
@@ -295,6 +424,98 @@ class RecordingService : LifecycleService() {
         } else {
             stopSelf()
         }
+    }
+
+    private fun startHealthMonitoring() {
+        healthMonitorJob?.cancel()
+        healthMonitorJob = lifecycleScope.launch {
+            while (serviceStarted && !stopRequested) {
+                delay(HEALTH_CHECK_INTERVAL_MILLIS)
+                evaluateResourcePressure()
+            }
+        }
+    }
+
+    private fun evaluateResourcePressure() {
+        val requested = requestedSessionSettings ?: return
+        val active = activeSessionSettings ?: return
+        if (!requested.autoDowngradeEnabled) {
+            return
+        }
+        val reasons = buildSet {
+            if (thermalNeedsDowngrade()) {
+                add(RecordingDowngradeReason.Thermal)
+            }
+            if (batteryNeedsDowngrade()) {
+                add(RecordingDowngradeReason.Battery)
+            }
+            if (!storageManager.ensureSpaceForNextSegment(active)) {
+                add(RecordingDowngradeReason.StartupStorage)
+            }
+        }
+        if (reasons.isEmpty()) {
+            return
+        }
+
+        val capabilities = CameraCapabilitiesRepository(this).capabilities()
+        val fallback = RecordingStartupFallbackPolicy
+            .fallbackCandidates(active, capabilities)
+            .firstOrNull { storageManager.ensureSpaceForNextSegment(it) }
+            ?: active.copy(
+                bitratePreset = BitratePreset.SpaceSaver,
+                dynamicRange = "sdr",
+                stabilizationMode = StabilizationMode.Off,
+                frameRate = minOf(active.frameRate, 30),
+                resolution = if (active.resolution == "4K") "1080p" else "720p",
+            )
+        if (fallback == active && downgradeState?.reasons?.containsAll(reasons) == true) {
+            return
+        }
+
+        val nextState = RecordingDowngradeState(
+            reasons = (downgradeState?.reasons.orEmpty() + reasons),
+            requestedSettings = requested,
+            activeSettings = fallback,
+            message = resourceDowngradeMessage(reasons, fallback),
+        )
+        activeSessionSettings = fallback
+        downgradeState = nextState
+        RecordingStateBus.update(
+            RecordingUiState(
+                isRecording = true,
+                message = nextState.message,
+                activeSettings = fallback,
+                downgradeState = nextState,
+                startedAtMillis = currentSegment?.startedAtMillis,
+                currentSegmentPath = currentSegment?.file?.absolutePath,
+            ),
+        )
+        updateNotification(nextState.message)
+    }
+
+    private fun thermalNeedsDowngrade(): Boolean {
+        val powerManager = getSystemService<PowerManager>() ?: return false
+        return powerManager.currentThermalStatus >= PowerManager.THERMAL_STATUS_MODERATE
+    }
+
+    private fun batteryNeedsDowngrade(): Boolean {
+        val batteryManager = getSystemService<BatteryManager>() ?: return false
+        val batteryPercent = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        if (batteryPercent < 0 || batteryPercent >= BATTERY_DOWNGRADE_PERCENT) {
+            return false
+        }
+        return batteryManager.isCharging().not()
+    }
+
+    private fun storageDowngradeMessage(settings: RecordingSettings): String =
+        "${getString(R.string.recording_auto_downgrade_body)} 存储空间不足，已临时切到 ${settings.resolution}${settings.frameRate}fps ${settings.bitratePreset.label()}。"
+
+    private fun resourceDowngradeMessage(
+        reasons: Set<RecordingDowngradeReason>,
+        settings: RecordingSettings,
+    ): String {
+        val reasonText = reasons.sortedBy { it.ordinal }.joinToString("、") { it.label() }
+        return "$reasonText 触发保护，下一段起临时切到 ${settings.resolution}${settings.frameRate}fps ${settings.bitratePreset.label()}。"
     }
 
     private fun cameraSelectorFor(settings: RecordingSettings): CameraSelector {
@@ -332,8 +553,11 @@ class RecordingService : LifecycleService() {
         builder: Recorder.Builder,
         settings: RecordingSettings,
     ) {
-        val mimeType = settings.codec.toVideoMimeType() ?: return
-        builder.setVideoMimeType(mimeType)
+        settings.codec.toVideoMimeType()?.let { builder.setVideoMimeType(it) }
+        builder.setTargetVideoEncodingBitRate(RecordingStorageEstimator.targetVideoBitrate(settings))
+        RecordingStorageEstimator.audioBitrate(settings)
+            .takeIf { it > 0 }
+            ?.let { builder.setTargetAudioEncodingBitRate(it) }
     }
 
     private fun qualityFor(resolution: String): Quality = when (resolution) {
@@ -350,6 +574,19 @@ class RecordingService : LifecycleService() {
 
     private fun cameraIdOf(info: CameraInfo): String =
         Camera2CameraInfo.from(info).cameraId
+
+    private fun BitratePreset.label(): String = when (this) {
+        BitratePreset.Auto -> "自动"
+        BitratePreset.SpaceSaver -> "节省空间"
+        BitratePreset.Standard -> "标准"
+        BitratePreset.HighQuality -> "高画质"
+    }
+
+    private fun RecordingDowngradeReason.label(): String = when (this) {
+        RecordingDowngradeReason.StartupStorage -> "存储空间不足"
+        RecordingDowngradeReason.Thermal -> "设备发热"
+        RecordingDowngradeReason.Battery -> "电量偏低"
+    }
 
     private fun buildNotification(message: String): Notification {
         val openIntent = Intent(this, MainActivity::class.java)
@@ -412,12 +649,21 @@ class RecordingService : LifecycleService() {
         val settings: RecordingSettings,
     )
 
+    private data class StartupSettings(
+        val settings: RecordingSettings,
+        val message: String? = null,
+        val downgradeState: RecordingDowngradeState? = null,
+    )
+
     companion object {
         private const val TAG = "RecordingService"
         private const val CHANNEL_ID = "dashcam_recording"
         private const val NOTIFICATION_ID = 1001
         private const val ACTION_START = "com.xxxifan.dashcam.action.START"
         private const val ACTION_STOP = "com.xxxifan.dashcam.action.STOP"
+        private const val CAMERA_INTERRUPTION_WARNING_THRESHOLD = 2
+        private const val HEALTH_CHECK_INTERVAL_MILLIS = 30_000L
+        private const val BATTERY_DOWNGRADE_PERCENT = 10
 
         private val fileTimestampFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
 

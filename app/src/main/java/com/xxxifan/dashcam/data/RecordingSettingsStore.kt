@@ -8,9 +8,10 @@ class RecordingSettingsStore(
     fun get(): RecordingSettings = RecordingSettings(
         segmentMinutes = mmkv.decodeInt(KEY_SEGMENT_MINUTES, 2),
         audioEnabled = mmkv.decodeBool(KEY_AUDIO_ENABLED, true),
-        resolution = mmkv.decodeString(KEY_RESOLUTION, "1080p") ?: "1080p",
+        resolution = mmkv.decodeString(KEY_RESOLUTION, "720p") ?: "720p",
         frameRate = mmkv.decodeInt(KEY_FRAME_RATE, 30),
         codec = mmkv.decodeString(KEY_CODEC, "auto") ?: "auto",
+        bitratePreset = decodeBitratePreset(),
         dynamicRange = mmkv.decodeString(KEY_DYNAMIC_RANGE, "sdr") ?: "sdr",
         stabilizationMode = decodeStabilization(),
         cameraId = mmkv.decodeString(KEY_CAMERA_ID, "") ?: "",
@@ -32,6 +33,7 @@ class RecordingSettingsStore(
         mmkv.encode(KEY_RESOLUTION, settings.resolution)
         mmkv.encode(KEY_FRAME_RATE, settings.frameRate)
         mmkv.encode(KEY_CODEC, settings.codec)
+        mmkv.encode(KEY_BITRATE_PRESET, settings.bitratePreset.name)
         mmkv.encode(KEY_DYNAMIC_RANGE, settings.dynamicRange)
         mmkv.encode(KEY_STABILIZATION, settings.stabilizationMode.name)
         mmkv.encode(KEY_CAMERA_ID, settings.cameraId)
@@ -48,12 +50,20 @@ class RecordingSettingsStore(
         }.getOrDefault(StabilizationMode.Standard)
     }
 
+    private fun decodeBitratePreset(): BitratePreset {
+        val name = mmkv.decodeString(KEY_BITRATE_PRESET, BitratePreset.Standard.name)
+        return runCatching {
+            BitratePreset.valueOf(name ?: BitratePreset.Standard.name)
+        }.getOrDefault(BitratePreset.Standard)
+    }
+
     private companion object {
         const val KEY_SEGMENT_MINUTES = "segment_minutes"
         const val KEY_AUDIO_ENABLED = "audio_enabled"
         const val KEY_RESOLUTION = "resolution"
         const val KEY_FRAME_RATE = "frame_rate"
         const val KEY_CODEC = "codec"
+        const val KEY_BITRATE_PRESET = "bitrate_preset"
         const val KEY_DYNAMIC_RANGE = "dynamic_range"
         const val KEY_STABILIZATION = "stabilization"
         const val KEY_CAMERA_ID = "camera_id"

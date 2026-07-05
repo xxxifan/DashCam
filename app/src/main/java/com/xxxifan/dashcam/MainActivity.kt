@@ -86,6 +86,7 @@ import com.xxxifan.dashcam.camera.CameraCapabilitiesRepository
 import com.xxxifan.dashcam.camera.PreviewController
 import com.xxxifan.dashcam.camera.codecLabel
 import com.xxxifan.dashcam.camera.dynamicRangeLabel
+import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.RecordingEntry
 import com.xxxifan.dashcam.data.RecordingRepository
 import com.xxxifan.dashcam.data.RecordingSettings
@@ -96,6 +97,8 @@ import com.xxxifan.dashcam.data.formatBytes
 import com.xxxifan.dashcam.data.formatDuration
 import com.xxxifan.dashcam.data.timeLabel
 import com.xxxifan.dashcam.recording.RecordingService
+import com.xxxifan.dashcam.recording.RecordingDowngradeReason
+import com.xxxifan.dashcam.recording.RecordingDowngradeState
 import com.xxxifan.dashcam.recording.RecordingStateBus
 import com.xxxifan.dashcam.storage.LoopStorageManager
 import com.xxxifan.dashcam.storage.RecordingStorageEstimate
@@ -192,15 +195,17 @@ private fun DashCamApp(
 
         LaunchedEffect(
             settings,
+            uiState.activeSettings,
             entries,
             selectedTab,
             uiState.isRecording,
             uiState.recordedBytes,
             uiState.recordedDurationNanos,
         ) {
+            val estimateSettings = uiState.activeSettings ?: settings
             storageEstimate = RecordingStorageEstimator.estimate(
                 context = context,
-                settings = settings,
+                settings = estimateSettings,
                 entries = entries,
                 liveRecordedBytes = uiState.recordedBytes,
                 liveRecordedDurationNanos = uiState.recordedDurationNanos,
@@ -252,12 +257,14 @@ private fun DashCamApp(
                 }
             },
         ) { padding ->
+            val recordingSettings = uiState.activeSettings ?: settings
             when (selectedTab) {
                 0 -> RecordingHome(
                     padding = padding,
                     stateMessage = uiState.message,
+                    fallbackGuidance = uiState.fallbackGuidance,
                     isRecording = uiState.isRecording,
-                    settings = settings,
+                    settings = recordingSettings,
                     storageEstimate = storageEstimate,
                     onStart = {
                         if (context.hasRecordingPermissions()) {
@@ -280,6 +287,7 @@ private fun DashCamApp(
                     padding = padding,
                     settings = settings,
                     isRecording = uiState.isRecording,
+                    downgradeState = uiState.downgradeState,
                     capabilities = cameraCapabilities,
                     storageEstimate = storageEstimate,
                     onSettingsChange = { update ->
@@ -316,6 +324,7 @@ private fun AppTopBar(
 private fun RecordingHome(
     padding: PaddingValues,
     stateMessage: String,
+    fallbackGuidance: String?,
     isRecording: Boolean,
     settings: RecordingSettings,
     storageEstimate: RecordingStorageEstimate,
@@ -337,6 +346,7 @@ private fun RecordingHome(
         RecordingStatusCard(
             isRecording = isRecording,
             stateMessage = stateMessage,
+            fallbackGuidance = fallbackGuidance,
             settings = settings,
             storageEstimate = storageEstimate,
         )
@@ -374,6 +384,7 @@ private fun RecordingHome(
 private fun RecordingStatusCard(
     isRecording: Boolean,
     stateMessage: String,
+    fallbackGuidance: String?,
     settings: RecordingSettings,
     storageEstimate: RecordingStorageEstimate,
 ) {
@@ -393,12 +404,27 @@ private fun RecordingStatusCard(
                 fontWeight = FontWeight.Bold,
             )
             Text(stateMessage, style = MaterialTheme.typography.bodyMedium)
+            if (isRecording && storageEstimate.remainingBytes <= 0L) {
+                Text(
+                    "当前安全可写空间不足，后续片段会继续尝试自动降档或停止录制。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            if (!fallbackGuidance.isNullOrBlank()) {
+                Text(
+                    fallbackGuidance,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 AssistChip(onClick = {}, label = { Text("${settings.resolution}${settings.frameRate}fps") })
                 AssistChip(onClick = {}, label = { Text(settings.codec.codecLabel()) })
+                AssistChip(onClick = {}, label = { Text(settings.bitratePreset.label()) })
                 AssistChip(onClick = {}, label = { Text(settings.dynamicRange.dynamicRangeLabel()) })
                 AssistChip(onClick = {}, label = { Text("分段 ${settings.segmentMinutes} 分钟") })
             }
@@ -477,6 +503,7 @@ private fun SettingsScreen(
     padding: PaddingValues,
     settings: RecordingSettings,
     isRecording: Boolean,
+    downgradeState: RecordingDowngradeState?,
     capabilities: CameraCapabilities,
     storageEstimate: RecordingStorageEstimate,
     onSettingsChange: ((RecordingSettings) -> RecordingSettings) -> Unit,
@@ -495,6 +522,8 @@ private fun SettingsScreen(
     val maxLoopQuotaGb = maxLoopQuotaBytes.toQuotaGb()
     val loopQuotaValueBytes = settings.loopQuotaBytes
         ?: maxLoopQuotaBytes.coerceAtLeast(RecordingStorageEstimator.MIN_LOOP_QUOTA_BYTES)
+    val downgradeText = downgradeState?.settingsLockMessage()
+    val qualityControlsEnabled = !isRecording && downgradeState == null
 
     LazyColumn(
         modifier = Modifier
@@ -536,12 +565,20 @@ private fun SettingsScreen(
         }
         item {
             SettingsSection("画质") {
+                if (!downgradeText.isNullOrBlank()) {
+                    Text(
+                        downgradeText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
                 Text("分辨率")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     capabilities.resolutionOptions.forEach { option ->
                         FilterChip(
-                            enabled = !isRecording,
-                            selected = settings.resolution == option,
+                            enabled = qualityControlsEnabled,
+                            selected = (downgradeState?.activeSettings?.resolution ?: settings.resolution) == option,
                             onClick = { onSettingsChange { it.copy(resolution = option) } },
                             label = { Text(option) },
                         )
@@ -552,8 +589,8 @@ private fun SettingsScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     capabilities.frameRateOptions.forEach { option ->
                         FilterChip(
-                            enabled = !isRecording,
-                            selected = settings.frameRate == option,
+                            enabled = qualityControlsEnabled,
+                            selected = (downgradeState?.activeSettings?.frameRate ?: settings.frameRate) == option,
                             onClick = { onSettingsChange { it.copy(frameRate = option) } },
                             label = { Text("${option}fps") },
                         )
@@ -564,10 +601,27 @@ private fun SettingsScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     capabilities.codecOptions.forEach { option ->
                         FilterChip(
-                            enabled = !isRecording,
-                            selected = settings.codec == option.id,
+                            enabled = qualityControlsEnabled,
+                            selected = (downgradeState?.activeSettings?.codec ?: settings.codec) == option.id,
                             onClick = { onSettingsChange { it.copy(codec = option.id) } },
                             label = { Text(option.label) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("质量档位")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        BitratePreset.Auto,
+                        BitratePreset.SpaceSaver,
+                        BitratePreset.Standard,
+                        BitratePreset.HighQuality,
+                    ).forEach { option ->
+                        FilterChip(
+                            enabled = qualityControlsEnabled,
+                            selected = (downgradeState?.activeSettings?.bitratePreset ?: settings.bitratePreset) == option,
+                            onClick = { onSettingsChange { it.copy(bitratePreset = option) } },
+                            label = { Text(option.label()) },
                         )
                     }
                 }
@@ -577,8 +631,8 @@ private fun SettingsScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         capabilities.dynamicRangeOptions.forEach { option ->
                             FilterChip(
-                                enabled = !isRecording,
-                                selected = settings.dynamicRange == option.id,
+                                enabled = qualityControlsEnabled,
+                                selected = (downgradeState?.activeSettings?.dynamicRange ?: settings.dynamicRange) == option.id,
                                 onClick = { onSettingsChange { it.copy(dynamicRange = option.id) } },
                                 label = { Text(option.label) },
                             )
@@ -606,12 +660,20 @@ private fun SettingsScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     capabilities.stabilizationModes.forEach { mode ->
                         FilterChip(
-                            enabled = !isRecording,
-                            selected = settings.stabilizationMode == mode,
+                            enabled = qualityControlsEnabled,
+                            selected = (downgradeState?.activeSettings?.stabilizationMode ?: settings.stabilizationMode) == mode,
                             onClick = { onSettingsChange { it.copy(stabilizationMode = mode) } },
                             label = { Text(mode.label()) },
                         )
                     }
+                }
+                if (!downgradeText.isNullOrBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        downgradeText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }
@@ -1034,9 +1096,10 @@ private fun RecordingSettings.coerceToCapabilities(capabilities: CameraCapabilit
     val camera = capabilities.cameraOptions.firstOrNull { it.id == cameraId }
         ?: capabilities.cameraOptions.firstOrNull()
     val resolution = resolution.takeIf { it in capabilities.resolutionOptions }
+        ?: capabilities.resolutionOptions.firstOrNull { it == "720p" }
         ?: capabilities.resolutionOptions.firstOrNull { it == "1080p" }
         ?: capabilities.resolutionOptions.firstOrNull()
-        ?: "1080p"
+        ?: "720p"
     val frameRate = frameRate.takeIf { it in capabilities.frameRateOptions }
         ?: capabilities.frameRateOptions.firstOrNull { it == 30 }
         ?: capabilities.frameRateOptions.firstOrNull()
@@ -1096,4 +1159,22 @@ private fun StabilizationMode.label(): String = when (this) {
     StabilizationMode.Off -> "关"
     StabilizationMode.Standard -> "标准"
     StabilizationMode.Enhanced -> "增强"
+}
+
+private fun BitratePreset.label(): String = when (this) {
+    BitratePreset.Auto -> "自动"
+    BitratePreset.SpaceSaver -> "节省空间"
+    BitratePreset.Standard -> "标准"
+    BitratePreset.HighQuality -> "高画质"
+}
+
+private fun RecordingDowngradeState.settingsLockMessage(): String {
+    val reasonsText = reasons.sortedBy { it.ordinal }.joinToString("、") { it.label() }
+    return "本次录制已因$reasonsText 临时降档，画质相关设置已锁定为 ${activeSettings.resolution}${activeSettings.frameRate}fps ${activeSettings.bitratePreset.label()}。停止录制后可恢复修改。"
+}
+
+private fun RecordingDowngradeReason.label(): String = when (this) {
+    RecordingDowngradeReason.StartupStorage -> "存储空间不足"
+    RecordingDowngradeReason.Thermal -> "设备发热"
+    RecordingDowngradeReason.Battery -> "电量偏低"
 }

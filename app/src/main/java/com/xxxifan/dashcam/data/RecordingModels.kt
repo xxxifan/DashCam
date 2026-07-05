@@ -14,12 +14,20 @@ enum class StabilizationMode {
     Enhanced,
 }
 
+enum class BitratePreset {
+    Auto,
+    SpaceSaver,
+    Standard,
+    HighQuality,
+}
+
 data class RecordingSettings(
     val segmentMinutes: Int = 2,
     val audioEnabled: Boolean = true,
-    val resolution: String = "1080p",
+    val resolution: String = "720p",
     val frameRate: Int = 30,
     val codec: String = "auto",
+    val bitratePreset: BitratePreset = BitratePreset.Standard,
     val dynamicRange: String = "sdr",
     val stabilizationMode: StabilizationMode = StabilizationMode.Standard,
     val cameraId: String = "",
@@ -38,6 +46,7 @@ data class RecordingEntry(
     val resolution: String,
     val frameRate: Int,
     val codec: String,
+    val bitratePreset: BitratePreset = BitratePreset.Standard,
     val dynamicRange: String = "sdr",
     val audioEnabled: Boolean,
     val stabilizationMode: StabilizationMode,
@@ -59,6 +68,7 @@ data class RecordingEntry(
         .put("resolution", resolution)
         .put("frameRate", frameRate)
         .put("codec", codec)
+        .put("bitratePreset", bitratePreset.name)
         .put("dynamicRange", dynamicRange)
         .put("audioEnabled", audioEnabled)
         .put("stabilizationMode", stabilizationMode.name)
@@ -79,6 +89,9 @@ data class RecordingEntry(
                 resolution = json.optString("resolution", "1080p"),
                 frameRate = json.optInt("frameRate", 30),
                 codec = json.optString("codec", "auto"),
+                bitratePreset = runCatching {
+                    BitratePreset.valueOf(json.optString("bitratePreset", BitratePreset.Standard.name))
+                }.getOrDefault(BitratePreset.Standard),
                 dynamicRange = json.optString("dynamicRange", "sdr"),
                 audioEnabled = json.optBoolean("audioEnabled", true),
                 stabilizationMode = runCatching {
@@ -101,6 +114,7 @@ data class RecordingEntry(
                 resolution = parsed?.second ?: "1080p",
                 frameRate = parsed?.third ?: 30,
                 codec = parsed?.fourth ?: "auto",
+                bitratePreset = BitratePreset.Standard,
                 dynamicRange = "sdr",
                 audioEnabled = true,
                 stabilizationMode = StabilizationMode.Standard,

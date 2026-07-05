@@ -2,6 +2,7 @@ package com.xxxifan.dashcam.storage
 
 import android.content.Context
 import android.os.StatFs
+import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.RecordingEntry
 import com.xxxifan.dashcam.data.RecordingSettings
 import java.io.File
@@ -103,6 +104,7 @@ object RecordingStorageEstimator {
                 entry.resolution == settings.resolution &&
                 entry.frameRate == settings.frameRate &&
                 (entry.codec == settings.codec || settings.codec == "auto") &&
+                entry.bitratePreset == settings.bitratePreset &&
                 entry.dynamicRange == settings.dynamicRange
         }
         val matchingDurationMillis = matchingEntries.sumOf { it.durationMillis }
@@ -120,6 +122,10 @@ object RecordingStorageEstimator {
     }
 
     private fun heuristicBytesPerSecond(settings: RecordingSettings): Long {
+        val targetVideoBitrate = targetVideoBitrate(settings).toLong()
+        if (targetVideoBitrate > 0L) {
+            return ((targetVideoBitrate + audioBitrate(settings)) / 8L).coerceAtLeast(1L)
+        }
         val baseMbps = when (settings.resolution) {
             "720p" -> 12.0
             "4K" -> 80.0
@@ -141,5 +147,74 @@ object RecordingStorageEstimator {
         return ((totalMbps * 1_000_000.0) / 8.0).roundToLong().coerceAtLeast(1L)
     }
 
+    fun targetVideoBitrate(settings: RecordingSettings): Int {
+        val preset = if (settings.bitratePreset == BitratePreset.Auto) {
+            BitratePreset.Standard
+        } else {
+            settings.bitratePreset
+        }
+        val baseMbps = when (preset) {
+            BitratePreset.Auto -> 8.0
+            BitratePreset.SpaceSaver -> bitrateTable(
+                settings = settings,
+                p720 = 4.0,
+                p1080 = 8.0,
+                p1080HighFps = 14.0,
+                p4k = 28.0,
+            )
+            BitratePreset.Standard -> bitrateTable(
+                settings = settings,
+                p720 = 8.0,
+                p1080 = 16.0,
+                p1080HighFps = 28.0,
+                p4k = 55.0,
+            )
+            BitratePreset.HighQuality -> bitrateTable(
+                settings = settings,
+                p720 = 12.0,
+                p1080 = 25.0,
+                p1080HighFps = 42.0,
+                p4k = 80.0,
+            )
+        }
+        return (baseMbps * 1_000_000.0).roundToLong()
+            .coerceIn(1L, Int.MAX_VALUE.toLong())
+            .toInt()
+    }
+
+    fun audioBitrate(settings: RecordingSettings): Int =
+        if (settings.audioEnabled) AUDIO_BITRATE else 0
+
+    fun safeRecordingCapacityBytes(
+        context: Context,
+        settings: RecordingSettings,
+    ): Long {
+        val maxQuota = maxQuotaBytes(context, settings.reservePercent)
+        return minOf(settings.loopQuotaBytes ?: maxQuota, maxQuota).coerceAtLeast(0L)
+    }
+
+    private fun bitrateTable(
+        settings: RecordingSettings,
+        p720: Double,
+        p1080: Double,
+        p1080HighFps: Double,
+        p4k: Double,
+    ): Double {
+        val baseMbps = when (settings.resolution) {
+            "720p" -> p720
+            "4K" -> p4k
+            else -> if (settings.frameRate >= 60) p1080HighFps else p1080
+        }
+        return when {
+            settings.resolution == "4K" && settings.frameRate >= 60 -> baseMbps * HIGH_FPS_MULTIPLIER
+            settings.resolution == "720p" && settings.frameRate >= 60 -> baseMbps * HIGH_FPS_MULTIPLIER
+            settings.frameRate <= 24 -> baseMbps * LOW_FPS_MULTIPLIER
+            else -> baseMbps
+        }
+    }
+
+    private const val AUDIO_BITRATE = 128_000
+    private const val HIGH_FPS_MULTIPLIER = 1.7
+    private const val LOW_FPS_MULTIPLIER = 0.85
     private const val SEGMENT_MARGIN = 1.15
 }

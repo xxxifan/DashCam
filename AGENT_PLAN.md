@@ -659,8 +659,8 @@ Status: Mostly done.
 - [x] Implement quota picker from 2GB to available space after reserve.
 - [x] Estimate remaining recording space and recordable time from live stats, historical files, or selected profile heuristics.
 - [x] Estimate next segment size from selected resolution/fps/codec/HDR/audio and segment duration before loop cleanup.
-- [ ] Implement startup quality fallback when recording space is too low for high-quality profiles.
-  - Desired behavior: disable or lower high-resolution/high-quality settings, try the lowest viable profile, then show a storage-insufficient error if still unsafe.
+- [x] Implement startup quality fallback when recording space is too low for high-quality profiles.
+  - Current state: startup first tries the requested settings; if storage is unsafe and auto-downgrade is enabled, the service evaluates lower-storage supported profiles, starts the lowest viable temporary recording profile, and reports the active profile in UI/notification state. If no candidate is safe, it shows the storage-insufficient error.
 
 Current anchors:
 
@@ -681,8 +681,9 @@ Status: Partial, with black-screen UI currently deferred.
   - Product update: black-screen button was removed while lock-screen recording appears viable.
   - Keep this as a future fallback if lock-screen recording proves unstable.
 - [deferred] Add UI toggle between preview and black-screen mode.
-- [ ] Add fallback handling when lock-screen recording fails or is unstable.
-  - Desired behavior: detect repeated lock-screen camera interruption or service failure and guide user to fallback mode.
+- [~] Add fallback handling when lock-screen recording fails or is unstable.
+  - Current state: CameraX source-inactive finalization is treated as a camera interruption signal. Repeated interruption or recording-pipeline failure now stops safely and shows foreground/screen-on and lower-quality guidance.
+  - Remaining: add a dedicated black-screen low-brightness fallback screen if lock-screen recording proves unstable on broader device tests.
 
 Current anchors:
 
@@ -699,8 +700,10 @@ Status: Mostly done.
 - [x] Populate supported HDR/dynamic range options.
 - [x] Populate back lens options and expose lens selection only in settings.
 - [x] Apply selected settings to new recordings.
-- [ ] Implement bitrate/quality preset settings and apply them with CameraX target bitrate APIs.
-- [ ] Implement app-level Auto quality selection based on remaining safe recording space and the 8-hour target.
+- [x] Implement bitrate/quality preset settings and apply them with CameraX target bitrate APIs.
+  - Current state: settings include Auto, Space saver, Standard, and High quality. Recording startup resolves these to target video/audio bitrate values and applies them through CameraX `Recorder.Builder`.
+- [x] Implement app-level Auto quality selection based on remaining safe recording space and the 8-hour target.
+  - Current state: Auto resolves to the highest supported candidate that fits the 8-hour safe-storage target, ranking resolution before fps, bitrate preset, HDR, and stabilization. If no candidate fits, the lowest-storage supported profile is used so startup fallback can still attempt a viable recording.
 - [~] Handle unsupported combinations gracefully.
   - Current state: saved settings are coerced to runtime capabilities and CameraX fallback quality strategy is used.
   - Remaining: validate cross-feature combinations such as physical ultra-wide + 4K/60fps + enhanced stabilization, bitrate preset, codec, and HDR, then downgrade/disable invalid combinations before recording.
@@ -716,13 +719,15 @@ Current anchors:
 
 Status: Partial skeleton.
 
-- [ ] Implement thermal, battery, storage, and recording pipeline monitors.
+- [~] Implement thermal, battery, storage, and recording pipeline monitors.
+  - Current state: recording service polls thermal status, battery level/charging state, and next-segment storage safety while recording. Pressure can mark the active session as downgraded and apply lower settings from the next segment.
+  - Remaining: add richer recording-pipeline health scoring and device-test thresholds.
 - [x] Implement `RecordingHealthSnapshot`.
 - [x] Implement public `RecordingSafetyPolicy`.
 - [x] Implement safety decision model and `RecordingSafetyEventSink` interface.
 - [~] Implement auto-downgrade setting.
-  - Current state: setting exists and is persisted.
-  - Remaining: connect setting to health monitoring and active recording quality changes.
+  - Current state: setting is persisted and now controls startup storage fallback plus runtime thermal, battery, and storage pressure downgrades. Downgraded sessions expose the active temporary profile and lock quality-related controls with explanatory UI text.
+  - Remaining: tune thresholds through long-run device tests and decide whether later versions should restore quality automatically.
 - [ ] Implement emergency stop behavior driven by safety decisions.
 - [ ] Stream safety decisions to UI/notification/log sinks.
 - [ ] Keep `RecordingSafetyPolicy` independent from future voice/TTS/sound/vibration sinks.
