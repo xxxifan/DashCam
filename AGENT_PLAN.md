@@ -751,9 +751,9 @@ Status: Partial.
   - Current state: the library shows the active segment from recording UI state as a non-clickable row with written duration/bytes and no playback/delete/export/share actions.
 - [x] Exclude `RECORDING` and `FINALIZING` segments from playback, delete, export, share, loop deletion, and multi-select paths.
   - Current state: active segments are represented only by recording UI state and are not persisted into the library repository until CameraX finalization succeeds. The active row is read-only, so playback, delete, export, share, and loop deletion operate only on finalized repository entries.
-- [ ] Generate and display cached thumbnails for `READY` recordings.
-  - Desired behavior: create thumbnails off the main thread after segment finalization, cache them as regenerable derived files, coalesce duplicate work, limit decode concurrency, and reserve a fixed thumbnail slot in the list.
-  - Performance guardrails: no thumbnail work during Compose composition, no full-resolution frame decode for list rows, no eager whole-library generation on app startup, and no thumbnail probing of unfinished segments.
+- [x] Generate and display cached thumbnails for `READY` recordings.
+  - Current state: completed segments generate 320x180 JPEG thumbnails off the main thread after CameraX finalization, and the library lazily backfills the newest visible entries without eager whole-library startup work.
+  - Current state: thumbnail files live in app-private cache with a schema/version/source fingerprint, duplicate generation for the same recording is coalesced, decoding is limited to one job at a time, stale cache files are cleaned, and list rows reserve a fixed 16:9 thumbnail slot with a stable placeholder.
 - [~] Implement playback preview with Media3/ExoPlayer.
   - Current state: playback exists in a dialog preview.
   - Required next step: replace dialog preview with a full-screen playback/detail screen.
@@ -829,10 +829,10 @@ Current anchors:
 - [x] Old deletable recordings are deleted before stopping for storage pressure.
 - [x] Lock/protect behavior is intentionally deferred after v1.
 - [x] Default recordings do not appear in gallery apps.
-- [ ] The unfinished active segment is never exposed as a normal library item; it may appear only as a read-only live status row.
-- [ ] Playback, delete, export, share, loop deletion, and multi-select ignore `RECORDING` and `FINALIZING` segments.
-- [ ] Recording library shows thumbnails for completed videos.
-- [ ] Thumbnail generation is off-main-thread, cached on disk, bounded in concurrency, and does not run for unfinished segments.
+- [x] The unfinished active segment is never exposed as a normal library item; it may appear only as a read-only live status row.
+- [x] Playback, delete, export, share, loop deletion, and multi-select ignore `RECORDING` and `FINALIZING` segments.
+- [x] Recording library shows thumbnails for completed videos.
+- [x] Thumbnail generation is off-main-thread, cached on disk, bounded in concurrency, and does not run for unfinished segments.
 - [ ] Tapping a completed recording opens a full-screen player, not a dialog preview.
 - [ ] Full-screen playback supports seek bar, current time, total duration, buffered progress, play/pause, and playback speed selection.
 - [ ] Landscape videos can be viewed in a landscape full-screen playback orientation, and the app restores normal orientation after exiting playback.

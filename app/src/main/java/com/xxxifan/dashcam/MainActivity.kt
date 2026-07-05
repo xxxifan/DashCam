@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.view.ViewGroup
@@ -11,6 +12,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Arrangement
@@ -68,6 +71,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -91,6 +96,7 @@ import com.xxxifan.dashcam.data.RecordingEntry
 import com.xxxifan.dashcam.data.RecordingRepository
 import com.xxxifan.dashcam.data.RecordingSettings
 import com.xxxifan.dashcam.data.RecordingSettingsStore
+import com.xxxifan.dashcam.data.RecordingThumbnailManager
 import com.xxxifan.dashcam.data.StabilizationMode
 import com.xxxifan.dashcam.data.dateHeader
 import com.xxxifan.dashcam.data.formatBytes
@@ -106,6 +112,8 @@ import com.xxxifan.dashcam.storage.LoopStorageManager
 import com.xxxifan.dashcam.storage.RecordingStorageEstimate
 import com.xxxifan.dashcam.storage.RecordingStorageEstimator
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToLong
 
 class MainActivity : ComponentActivity() {
@@ -159,6 +167,7 @@ private fun DashCamApp(
         val context = LocalContext.current
         val settingsStore = remember { RecordingSettingsStore() }
         val recordingRepository = remember { RecordingRepository() }
+        val thumbnailManager = remember { RecordingThumbnailManager(context, recordingRepository) }
         val cameraCapabilities = remember { CameraCapabilitiesRepository(context).capabilities() }
         val uiState by RecordingStateBus.state.collectAsStateWithLifecycle()
         val entries by recordingRepository.entries.collectAsStateWithLifecycle()
@@ -192,6 +201,13 @@ private fun DashCamApp(
         LaunchedEffect(selectedTab) {
             if (selectedTab == 1) {
                 recordingRepository.refreshFromDirectory(LoopStorageManager.recordingDirectory(context))
+            }
+        }
+
+        LaunchedEffect(selectedTab, entries) {
+            if (selectedTab == 1) {
+                thumbnailManager.cleanOrphans(entries)
+                thumbnailManager.backfill(entries.take(8))
             }
         }
 
@@ -963,12 +979,7 @@ private fun RecordingListItem(
             modifier = Modifier.padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                Icons.Filled.Movie,
-                contentDescription = null,
-                modifier = Modifier.size(36.dp),
-                tint = MaterialTheme.colorScheme.primary,
-            )
+            RecordingThumbnail(entry)
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -997,6 +1008,44 @@ private fun RecordingListItem(
             IconButton(onClick = onDelete) {
                 Icon(Icons.Filled.Delete, contentDescription = "删除")
             }
+        }
+    }
+}
+
+@Composable
+private fun RecordingThumbnail(
+    entry: RecordingEntry,
+) {
+    var bitmap by remember(entry.thumbnailPath) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(entry.thumbnailPath) {
+        bitmap = withContext(Dispatchers.IO) {
+            entry.thumbnailPath
+                ?.let { BitmapFactory.decodeFile(it) }
+                ?.asImageBitmap()
+        }
+    }
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap!!,
+            contentDescription = null,
+            modifier = Modifier
+                .width(96.dp)
+                .height(54.dp),
+        )
+    } else {
+        Box(
+            modifier = Modifier
+                .width(96.dp)
+                .height(54.dp)
+                .background(Color(0xFFE2E8F0)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Movie,
+                contentDescription = null,
+                modifier = Modifier.size(28.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
         }
     }
 }

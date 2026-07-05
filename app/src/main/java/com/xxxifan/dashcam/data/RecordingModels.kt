@@ -53,6 +53,7 @@ data class RecordingEntry(
     val cameraId: String = "",
     val cameraLabel: String = "1X 主镜头",
     val exported: Boolean = false,
+    val thumbnailPath: String? = null,
 ) {
     val file: File get() = File(filePath)
 
@@ -75,6 +76,7 @@ data class RecordingEntry(
         .put("cameraId", cameraId)
         .put("cameraLabel", cameraLabel)
         .put("exported", exported)
+        .put("thumbnailPath", thumbnailPath)
         .toString()
 
     companion object {
@@ -100,6 +102,7 @@ data class RecordingEntry(
                 cameraId = json.optString("cameraId", ""),
                 cameraLabel = json.optString("cameraLabel", "1X 主镜头"),
                 exported = json.optBoolean("exported", false),
+                thumbnailPath = json.optString("thumbnailPath").takeIf { it.isNotBlank() },
             )
         }
 

@@ -20,8 +20,20 @@ class RecordingRepository(
         persist(next)
     }
 
+    fun update(entry: RecordingEntry) {
+        val next = loadEntries().map { existing ->
+            if (existing.id == entry.id) {
+                entry
+            } else {
+                existing
+            }
+        }.sortedByDescending { it.startedAtMillis }
+        persist(next)
+    }
+
     fun delete(entry: RecordingEntry) {
         entry.file.delete()
+        entry.thumbnailPath?.let { File(it).delete() }
         val next = loadEntries().filterNot { it.id == entry.id }
         mmkv.removeValueForKey(recordingKey(entry.id))
         persist(next)

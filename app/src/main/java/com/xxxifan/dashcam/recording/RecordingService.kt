@@ -47,6 +47,7 @@ import com.xxxifan.dashcam.data.RecordingEntry
 import com.xxxifan.dashcam.data.RecordingRepository
 import com.xxxifan.dashcam.data.RecordingSettings
 import com.xxxifan.dashcam.data.RecordingSettingsStore
+import com.xxxifan.dashcam.data.RecordingThumbnailManager
 import com.xxxifan.dashcam.data.StabilizationMode
 import com.xxxifan.dashcam.safety.DefaultRecordingSafetyPolicy
 import com.xxxifan.dashcam.safety.RecordingHealthSnapshot
@@ -69,6 +70,7 @@ class RecordingService : LifecycleService() {
     private val settingsStore by lazy { RecordingSettingsStore() }
     private val recordingRepository by lazy { RecordingRepository() }
     private val storageManager by lazy { LoopStorageManager(this, recordingRepository) }
+    private val thumbnailManager by lazy { RecordingThumbnailManager(this, recordingRepository) }
 
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
@@ -311,24 +313,26 @@ class RecordingService : LifecycleService() {
         if (!event.hasError() && segment.file.exists() && segment.file.length() > 0L) {
             cameraInterruptionCount = 0
             pipelineFailureCount = 0
-            recordingRepository.add(
-                RecordingEntry(
-                    id = segment.id,
-                    filePath = segment.file.absolutePath,
-                    startedAtMillis = segment.startedAtMillis,
-                    endedAtMillis = endedAt,
-                    sizeBytes = segment.file.length(),
-                    resolution = segment.settings.resolution,
-                    frameRate = segment.settings.frameRate,
-                    codec = segment.settings.codec,
-                    bitratePreset = segment.settings.bitratePreset,
-                    dynamicRange = segment.settings.dynamicRange,
-                    audioEnabled = segment.settings.audioEnabled,
-                    stabilizationMode = segment.settings.stabilizationMode,
-                    cameraId = segment.settings.cameraId,
-                    cameraLabel = segment.settings.cameraLabel,
-                ),
+            val entry = RecordingEntry(
+                id = segment.id,
+                filePath = segment.file.absolutePath,
+                startedAtMillis = segment.startedAtMillis,
+                endedAtMillis = endedAt,
+                sizeBytes = segment.file.length(),
+                resolution = segment.settings.resolution,
+                frameRate = segment.settings.frameRate,
+                codec = segment.settings.codec,
+                bitratePreset = segment.settings.bitratePreset,
+                dynamicRange = segment.settings.dynamicRange,
+                audioEnabled = segment.settings.audioEnabled,
+                stabilizationMode = segment.settings.stabilizationMode,
+                cameraId = segment.settings.cameraId,
+                cameraLabel = segment.settings.cameraLabel,
             )
+            recordingRepository.add(entry)
+            lifecycleScope.launch {
+                thumbnailManager.ensureThumbnail(entry)
+            }
             if (serviceStarted && !stopRequested) {
                 startNewSegment(activeSessionSettings ?: settingsStore.get())
             } else {
