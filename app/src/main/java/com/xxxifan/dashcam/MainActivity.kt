@@ -10,10 +10,12 @@ import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
-import android.provider.MediaStore
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
+import android.provider.MediaStore
+import android.provider.Settings
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -115,6 +117,7 @@ import com.xxxifan.dashcam.camera.CameraCapabilitiesRepository
 import com.xxxifan.dashcam.camera.PreviewController
 import com.xxxifan.dashcam.camera.codecLabel
 import com.xxxifan.dashcam.camera.dynamicRangeLabel
+import com.xxxifan.dashcam.data.AppGuidanceStore
 import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.PlaybackPreferencesStore
 import com.xxxifan.dashcam.data.RecordingAlertStore
@@ -200,6 +203,7 @@ private fun DashCamApp(
     ) {
         val context = LocalContext.current
         val appScope = rememberCoroutineScope()
+        val appGuidanceStore = remember { AppGuidanceStore() }
         val settingsStore = remember { RecordingSettingsStore() }
         val playbackPreferencesStore = remember { PlaybackPreferencesStore() }
         val alertStore = remember { RecordingAlertStore() }
@@ -228,6 +232,7 @@ private fun DashCamApp(
         }
         var selectedTab by remember { mutableIntStateOf(0) }
         var showConfirm by remember { mutableStateOf(false) }
+        var showBatteryOptimizationPrompt by remember { mutableStateOf(false) }
         val shouldShowConfirmAfterPermission = consumePermissionResult()
         val exportRecording: (RecordingEntry) -> Unit = { entry ->
             appScope.launch {
@@ -274,6 +279,11 @@ private fun DashCamApp(
                 directory = LoopStorageManager.recordingDirectory(context),
                 excludedPaths = activeRecordingPaths,
             )
+        }
+
+        LaunchedEffect(Unit) {
+            showBatteryOptimizationPrompt =
+                context.shouldShowBatteryOptimizationPrompt(appGuidanceStore)
         }
 
         LaunchedEffect(selectedTab, activeRecordingPaths) {
@@ -342,6 +352,26 @@ private fun DashCamApp(
                     alertStore.clearLastStopAlert()
                     stopAlert = null
                     context.startRecordingService()
+                },
+            )
+        }
+
+        if (showBatteryOptimizationPrompt) {
+            BatteryOptimizationPromptDialog(
+                onDismiss = {
+                    appGuidanceStore.markBatteryOptimizationPromptShown()
+                    showBatteryOptimizationPrompt = false
+                },
+                onConfirm = {
+                    appGuidanceStore.markBatteryOptimizationPromptShown()
+                    showBatteryOptimizationPrompt = false
+                    if (!context.openBatteryOptimizationSettings()) {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.battery_optimization_settings_failed),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
                 },
             )
         }
@@ -1867,6 +1897,28 @@ private fun StartRecordingDialog(
     )
 }
 
+@Composable
+private fun BatteryOptimizationPromptDialog(
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.battery_optimization_prompt_title)) },
+        text = { Text(stringResource(R.string.battery_optimization_prompt_body)) },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text(stringResource(R.string.battery_optimization_prompt_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.battery_optimization_prompt_dismiss))
+            }
+        },
+    )
+}
+
 private fun Context.hasRecordingPermissions(): Boolean {
     val permissions = listOf(
         Manifest.permission.CAMERA,
@@ -1875,6 +1927,34 @@ private fun Context.hasRecordingPermissions(): Boolean {
     )
     return permissions.all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    }
+}
+
+private fun Context.shouldShowBatteryOptimizationPrompt(
+    appGuidanceStore: AppGuidanceStore,
+): Boolean =
+    !appGuidanceStore.hasShownBatteryOptimizationPrompt() && !isIgnoringBatteryOptimizations()
+
+private fun Context.isIgnoringBatteryOptimizations(): Boolean {
+    val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return false
+    return powerManager.isIgnoringBatteryOptimizations(packageName)
+}
+
+private fun Context.openBatteryOptimizationSettings(): Boolean {
+    val intents = listOf(
+        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            .setData(Uri.parse("package:$packageName")),
+        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            .setData(Uri.parse("package:$packageName")),
+    )
+    return intents.any { intent ->
+        val launchIntent = if (this is Activity) intent else {
+            Intent(intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching {
+            startActivity(launchIntent)
+        }.isSuccess
     }
 }
 

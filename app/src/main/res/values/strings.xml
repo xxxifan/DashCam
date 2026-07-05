@@ -5,6 +5,11 @@
     <string name="recording_confirm_body">录制将通过常驻通知持续运行。开始后你可以按电源键锁屏，DashCam 会尽量继续录制。</string>
     <string name="recording_confirm_start">开始录制</string>
     <string name="recording_confirm_cancel">取消</string>
+    <string name="battery_optimization_prompt_title">允许后台持续录制？</string>
+    <string name="battery_optimization_prompt_body">DashCam 长时间录制依赖前台服务。建议在系统电池设置中允许 DashCam 不受电池优化限制，减少锁屏或后台时被系统暂停的概率。此提示只会出现一次。</string>
+    <string name="battery_optimization_prompt_confirm">去开启</string>
+    <string name="battery_optimization_prompt_dismiss">稍后</string>
+    <string name="battery_optimization_settings_failed">无法打开电池优化设置，请在系统设置中手动允许 DashCam 后台运行。</string>
     <string name="recording_start_body">DashCam 正在录制。你可以按电源键锁屏。</string>
     <string name="recording_black_screen_body">黑屏省电模式已开启，录制仍在继续。</string>
     <string name="recording_auto_downgrade_body">资源紧张，已自动调整为更稳定的录制质量。</string>
