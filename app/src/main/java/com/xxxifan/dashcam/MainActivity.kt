@@ -46,7 +46,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FileUpload
@@ -62,6 +61,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -116,6 +116,7 @@ import com.xxxifan.dashcam.camera.PreviewController
 import com.xxxifan.dashcam.camera.codecLabel
 import com.xxxifan.dashcam.camera.dynamicRangeLabel
 import com.xxxifan.dashcam.data.BitratePreset
+import com.xxxifan.dashcam.data.PlaybackPreferencesStore
 import com.xxxifan.dashcam.data.RecordingAlertStore
 import com.xxxifan.dashcam.data.RecordingEntry
 import com.xxxifan.dashcam.data.RecordingEventLogger
@@ -197,6 +198,7 @@ private fun DashCamApp(
         val context = LocalContext.current
         val appScope = rememberCoroutineScope()
         val settingsStore = remember { RecordingSettingsStore() }
+        val playbackPreferencesStore = remember { PlaybackPreferencesStore() }
         val alertStore = remember { RecordingAlertStore() }
         val recordingRepository = remember { RecordingRepository() }
         val thumbnailManager = remember { RecordingThumbnailManager(context, recordingRepository) }
@@ -371,12 +373,11 @@ private fun DashCamApp(
         if (activePlaybackEntry != null) {
             VideoPlaybackScreen(
                 entry = activePlaybackEntry,
+                entries = entries,
                 onDismiss = { playbackEntry = null },
-                onShare = { shareRecording(activePlaybackEntry) },
-                onExport = { exportRecording(activePlaybackEntry) },
-                onClip = {
-                    Toast.makeText(context, "剪辑功能将在后续版本加入", Toast.LENGTH_SHORT).show()
-                },
+                onShare = shareRecording,
+                onExport = exportRecording,
+                playbackPreferencesStore = playbackPreferencesStore,
             )
         } else {
             Scaffold(
@@ -1404,33 +1405,48 @@ private fun RecordingThumbnail(
 @Composable
 private fun VideoPlaybackScreen(
     entry: RecordingEntry,
+    entries: List<RecordingEntry>,
     onDismiss: () -> Unit,
-    onShare: () -> Unit,
-    onExport: () -> Unit,
-    onClip: () -> Unit,
+    onShare: (RecordingEntry) -> Unit,
+    onExport: (RecordingEntry) -> Unit,
+    playbackPreferencesStore: PlaybackPreferencesStore,
 ) {
     val context = LocalContext.current
     val activity = context.findActivity()
-    var metadata by remember(entry.filePath) { mutableStateOf<VideoMetadata?>(null) }
-    val player = remember(entry.filePath) {
+    val player = remember {
         ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(context.fileProviderUri(entry.file)))
-            prepare()
             playWhenReady = true
         }
     }
-    var isPlaying by remember(entry.filePath) { mutableStateOf(false) }
-    var positionMs by remember(entry.filePath) { mutableStateOf(0L) }
-    var bufferedPositionMs by remember(entry.filePath) { mutableStateOf(0L) }
-    var durationMs by remember(entry.filePath) { mutableStateOf(entry.durationMillis) }
-    var playbackSpeed by remember(entry.filePath) { mutableStateOf(1f) }
+    var currentEntry by remember(entry.filePath) { mutableStateOf(entry) }
+    var metadata by remember(currentEntry.filePath) { mutableStateOf<VideoMetadata?>(null) }
+    var continuousPlayEnabled by remember {
+        mutableStateOf(playbackPreferencesStore.isContinuousPlayEnabled())
+    }
+    var isPlaying by remember { mutableStateOf(false) }
+    var positionMs by remember { mutableStateOf(0L) }
+    var bufferedPositionMs by remember { mutableStateOf(0L) }
+    var durationMs by remember(currentEntry.filePath) { mutableStateOf(currentEntry.durationMillis) }
+    var playbackSpeed by remember { mutableStateOf(1f) }
+    val nextEntry = remember(currentEntry.id, entries) {
+        entries.nextRecordingAfter(currentEntry)
+    }
 
     BackHandler(onBack = onDismiss)
 
-    LaunchedEffect(entry.filePath) {
+    LaunchedEffect(currentEntry.filePath) {
         metadata = withContext(Dispatchers.IO) {
-            entry.file.readVideoMetadata()
+            currentEntry.file.readVideoMetadata()
         }
+    }
+
+    LaunchedEffect(currentEntry.filePath) {
+        positionMs = 0L
+        bufferedPositionMs = 0L
+        durationMs = currentEntry.durationMillis
+        player.setMediaItem(MediaItem.fromUri(context.fileProviderUri(currentEntry.file)))
+        player.prepare()
+        player.play()
     }
 
     DisposableEffect(activity, metadata?.isLandscape) {
@@ -1448,6 +1464,20 @@ private fun VideoPlaybackScreen(
     DisposableEffect(player) {
         onDispose {
             player.release()
+        }
+    }
+
+    DisposableEffect(player, continuousPlayEnabled, nextEntry?.id) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED && continuousPlayEnabled && nextEntry != null) {
+                    currentEntry = nextEntry
+                }
+            }
+        }
+        player.addListener(listener)
+        onDispose {
+            player.removeListener(listener)
         }
     }
 
@@ -1474,11 +1504,10 @@ private fun VideoPlaybackScreen(
                 .safeDrawingPadding(),
         ) {
             VideoPlaybackTopBar(
-                entry = entry,
+                entry = currentEntry,
                 onDismiss = onDismiss,
-                onShare = onShare,
-                onExport = onExport,
-                onClip = onClip,
+                onShare = { onShare(currentEntry) },
+                onExport = { onExport(currentEntry) },
             )
             Box(
                 modifier = Modifier
@@ -1510,6 +1539,8 @@ private fun VideoPlaybackScreen(
                 bufferedPositionMs = bufferedPositionMs,
                 durationMs = durationMs,
                 playbackSpeed = playbackSpeed,
+                continuousPlayEnabled = continuousPlayEnabled,
+                hasNextEntry = nextEntry != null,
                 onTogglePlayback = {
                     if (player.isPlaying) {
                         player.pause()
@@ -1525,6 +1556,10 @@ private fun VideoPlaybackScreen(
                     player.setPlaybackSpeed(speed)
                     playbackSpeed = speed
                 },
+                onContinuousPlayChange = { enabled ->
+                    continuousPlayEnabled = enabled
+                    playbackPreferencesStore.setContinuousPlayEnabled(enabled)
+                },
             )
         }
     }
@@ -1536,7 +1571,6 @@ private fun VideoPlaybackTopBar(
     onDismiss: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
-    onClip: () -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     Row(
@@ -1575,14 +1609,6 @@ private fun VideoPlaybackTopBar(
                 onDismissRequest = { showMenu = false },
             ) {
                 DropdownMenuItem(
-                    text = { Text("剪辑") },
-                    leadingIcon = { Icon(Icons.Filled.ContentCut, contentDescription = null) },
-                    onClick = {
-                        showMenu = false
-                        onClip()
-                    },
-                )
-                DropdownMenuItem(
                     text = { Text("导出") },
                     leadingIcon = { Icon(Icons.Filled.FileUpload, contentDescription = null) },
                     onClick = {
@@ -1610,35 +1636,24 @@ private fun VideoPlaybackControls(
     bufferedPositionMs: Long,
     durationMs: Long,
     playbackSpeed: Float,
+    continuousPlayEnabled: Boolean,
+    hasNextEntry: Boolean,
     onTogglePlayback: () -> Unit,
     onSeek: (Long) -> Unit,
     onSpeedChange: (Float) -> Unit,
+    onContinuousPlayChange: (Boolean) -> Unit,
 ) {
     var pendingSeekMs by remember { mutableStateOf<Long?>(null) }
     var showSpeedMenu by remember { mutableStateOf(false) }
     val safeDurationMs = durationMs.coerceAtLeast(1L)
     val displayPositionMs = (pendingSeekMs ?: positionMs).coerceIn(0L, safeDurationMs)
     val bufferedPercent = ((bufferedPositionMs.coerceIn(0L, safeDurationMs) * 100L) / safeDurationMs)
-    val bufferedFraction = bufferedPositionMs.toFloat() / safeDurationMs.toFloat()
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(3.dp)
-                .background(Color(0xFF1E293B)),
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(bufferedFraction.coerceIn(0f, 1f))
-                    .height(3.dp)
-                    .background(Color(0xFF64748B)),
-            )
-        }
         Slider(
             value = displayPositionMs.toFloat(),
             onValueChange = { pendingSeekMs = it.toLong() },
@@ -1677,28 +1692,47 @@ private fun VideoPlaybackControls(
                     modifier = Modifier.size(36.dp),
                 )
             }
-            Box {
-                TextButton(onClick = { showSpeedMenu = true }) {
-                    Text("${playbackSpeed.speedLabel()}x", color = Color.White)
-                }
-                DropdownMenu(
-                    expanded = showSpeedMenu,
-                    onDismissRequest = { showSpeedMenu = false },
-                ) {
-                    listOf(0.5f, 1f, 1.25f, 1.5f, 2f).forEach { speed ->
-                        DropdownMenuItem(
-                            text = { Text("${speed.speedLabel()}x") },
-                            onClick = {
-                                showSpeedMenu = false
-                                onSpeedChange(speed)
-                            },
-                        )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box {
+                    TextButton(onClick = { showSpeedMenu = true }) {
+                        Text("${playbackSpeed.speedLabel()}x", color = Color.White)
+                    }
+                    DropdownMenu(
+                        expanded = showSpeedMenu,
+                        onDismissRequest = { showSpeedMenu = false },
+                    ) {
+                        listOf(0.5f, 1f, 1.25f, 1.5f, 2f).forEach { speed ->
+                            DropdownMenuItem(
+                                text = { Text("${speed.speedLabel()}x") },
+                                onClick = {
+                                    showSpeedMenu = false
+                                    onSpeedChange(speed)
+                                },
+                            )
+                        }
                     }
                 }
+                Spacer(Modifier.width(8.dp))
+                Checkbox(
+                    checked = continuousPlayEnabled,
+                    onCheckedChange = onContinuousPlayChange,
+                )
+                Text(
+                    "连续播放",
+                    color = if (continuousPlayEnabled && !hasNextEntry) Color(0xFFCBD5E1) else Color.White,
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
     }
 }
+
+private fun List<RecordingEntry>.nextRecordingAfter(entry: RecordingEntry): RecordingEntry? =
+    filter { candidate ->
+        candidate.id != entry.id && candidate.startedAtMillis > entry.startedAtMillis
+    }.minByOrNull { it.startedAtMillis }
 
 @Composable
 private fun DeleteRecordingDialog(
