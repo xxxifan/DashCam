@@ -12,6 +12,19 @@ enum class RecordingDowngradeReason {
     Battery,
 }
 
+enum class RecordingStopReason {
+    Manual,
+    AppSafetyStorage,
+    AppSafetyThermal,
+    AppSafetyBattery,
+    AppSafetyPipeline,
+    CameraXError,
+    SourceInactive,
+    PermissionMissing,
+    SystemInterrupted,
+    Unknown,
+}
+
 data class RecordingDowngradeState(
     val reasons: Set<RecordingDowngradeReason>,
     val requestedSettings: RecordingSettings,
@@ -26,6 +39,7 @@ data class RecordingUiState(
     val downgradeState: RecordingDowngradeState? = null,
     val safetyDecision: RecordingSafetyDecision? = null,
     val fallbackGuidance: String? = null,
+    val stopReason: RecordingStopReason? = null,
     val startedAtMillis: Long? = null,
     val currentSegmentPath: String? = null,
     val recordedBytes: Long = 0L,

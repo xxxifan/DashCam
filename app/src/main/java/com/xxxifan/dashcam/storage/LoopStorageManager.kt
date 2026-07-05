@@ -2,6 +2,7 @@ package com.xxxifan.dashcam.storage
 
 import android.content.Context
 import android.os.StatFs
+import com.xxxifan.dashcam.data.RecordingEventLogger
 import com.xxxifan.dashcam.data.RecordingRepository
 import com.xxxifan.dashcam.data.RecordingSettings
 import java.io.File
@@ -10,6 +11,8 @@ class LoopStorageManager(
     private val context: Context,
     private val recordingRepository: RecordingRepository,
 ) {
+    private val eventLogger by lazy { RecordingEventLogger.get(context) }
+
     val recordingDirectory: File
         get() = File(context.getExternalFilesDir("Movies"), "DashCam/records").also { directory ->
             if (!directory.exists()) {
@@ -37,6 +40,18 @@ class LoopStorageManager(
         val stat = StatFs(directory.absolutePath)
         val reserveBytes = RecordingStorageEstimator.reserveBytes(stat.totalBytes, settings.reservePercent)
         val systemRemaining = (stat.availableBytes - reserveBytes).coerceAtLeast(0L)
+        eventLogger.log(
+            event = "space_check",
+            fields = mapOf(
+                "requiredBytes" to requiredBytes,
+                "systemRemainingBytes" to systemRemaining,
+                "quotaRemainingBytes" to quotaRemaining.takeIf { it != Long.MAX_VALUE },
+                "reserveBytes" to reserveBytes,
+                "availableBytes" to stat.availableBytes,
+                "totalBytes" to stat.totalBytes,
+                "loopQuotaBytes" to settings.loopQuotaBytes,
+            ),
+        )
         return systemRemaining >= requiredBytes && quotaRemaining >= requiredBytes
     }
 
@@ -49,7 +64,19 @@ class LoopStorageManager(
 
         val entries = recordingRepository.entries.value.sortedBy { it.startedAtMillis }
         for (entry in entries) {
+            val sizeBytes = entry.file.length()
             recordingRepository.delete(entry)
+            eventLogger.log(
+                event = "loop_delete",
+                fields = mapOf(
+                    "reason" to "reserve",
+                    "entryId" to entry.id,
+                    "filePath" to entry.filePath,
+                    "sizeBytes" to sizeBytes,
+                    "usableBytesAfterDelete" to directory.usableSpace,
+                    "reserveBytes" to reserveBytes,
+                ),
+            )
             if (directory.usableSpace >= reserveBytes) {
                 break
             }
@@ -71,8 +98,21 @@ class LoopStorageManager(
         }
         val entries = recordingRepository.entries.value.sortedBy { it.startedAtMillis }
         for (entry in entries) {
+            val sizeBytes = entry.file.length()
             recordingRepository.delete(entry)
             recordingBytes = RecordingStorageEstimator.recordingBytes(directory)
+            eventLogger.log(
+                event = "loop_delete",
+                fields = mapOf(
+                    "reason" to "quota",
+                    "entryId" to entry.id,
+                    "filePath" to entry.filePath,
+                    "sizeBytes" to sizeBytes,
+                    "recordingBytesAfterDelete" to recordingBytes,
+                    "quotaBytes" to quotaBytes,
+                    "requiredBytes" to minBytes,
+                ),
+            )
             if (recordingBytes + minBytes <= quotaBytes) {
                 break
             }

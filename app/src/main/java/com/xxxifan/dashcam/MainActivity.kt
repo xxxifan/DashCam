@@ -43,10 +43,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
@@ -92,6 +94,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -114,6 +118,7 @@ import com.xxxifan.dashcam.camera.dynamicRangeLabel
 import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.RecordingAlertStore
 import com.xxxifan.dashcam.data.RecordingEntry
+import com.xxxifan.dashcam.data.RecordingEventLogger
 import com.xxxifan.dashcam.data.RecordingRepository
 import com.xxxifan.dashcam.data.RecordingSettings
 import com.xxxifan.dashcam.data.RecordingSettingsStore
@@ -195,9 +200,13 @@ private fun DashCamApp(
         val alertStore = remember { RecordingAlertStore() }
         val recordingRepository = remember { RecordingRepository() }
         val thumbnailManager = remember { RecordingThumbnailManager(context, recordingRepository) }
+        val eventLogger = remember { RecordingEventLogger.get(context) }
         val cameraCapabilities = remember { CameraCapabilitiesRepository(context).capabilities() }
         val uiState by RecordingStateBus.state.collectAsStateWithLifecycle()
         val entries by recordingRepository.entries.collectAsStateWithLifecycle()
+        val activeRecordingPaths = remember(uiState.currentSegmentPath) {
+            setOfNotNull(uiState.currentSegmentPath)
+        }
         var settings by remember { mutableStateOf(settingsStore.get()) }
         var stopAlert by remember { mutableStateOf(alertStore.getLastStopAlert()) }
         var playbackEntry by remember { mutableStateOf<RecordingEntry?>(null) }
@@ -220,10 +229,28 @@ private fun DashCamApp(
                 val result = context.exportRecordingToMediaStore(entry)
                 result
                     .onSuccess {
+                        eventLogger.log(
+                            event = "export_success",
+                            fields = mapOf(
+                                "entryId" to entry.id,
+                                "filePath" to entry.filePath,
+                                "sizeBytes" to entry.sizeBytes,
+                                "uri" to it.toString(),
+                            ),
+                        )
                         recordingRepository.markExported(entry.id)
                         Toast.makeText(context, "已导出到 Movies/DashCam", Toast.LENGTH_SHORT).show()
                     }
                     .onFailure {
+                        eventLogger.log(
+                            event = "export_failure",
+                            fields = mapOf(
+                                "entryId" to entry.id,
+                                "filePath" to entry.filePath,
+                                "sizeBytes" to entry.sizeBytes,
+                                "error" to it.message,
+                            ),
+                        )
                         Toast.makeText(context, "导出失败：${it.message ?: "未知错误"}", Toast.LENGTH_LONG).show()
                     }
             }
@@ -237,12 +264,27 @@ private fun DashCamApp(
         }
 
         LaunchedEffect(Unit) {
-            recordingRepository.refreshFromDirectory(LoopStorageManager.recordingDirectory(context))
+            recordingRepository.refreshFromDirectory(
+                directory = LoopStorageManager.recordingDirectory(context),
+                excludedPaths = activeRecordingPaths,
+            )
         }
 
-        LaunchedEffect(selectedTab) {
+        LaunchedEffect(selectedTab, activeRecordingPaths) {
             if (selectedTab == 1) {
-                recordingRepository.refreshFromDirectory(LoopStorageManager.recordingDirectory(context))
+                recordingRepository.refreshFromDirectory(
+                    directory = LoopStorageManager.recordingDirectory(context),
+                    excludedPaths = activeRecordingPaths,
+                )
+            }
+        }
+
+        LaunchedEffect(activeRecordingPaths) {
+            if (activeRecordingPaths.isNotEmpty()) {
+                recordingRepository.refreshFromDirectory(
+                    directory = LoopStorageManager.recordingDirectory(context),
+                    excludedPaths = activeRecordingPaths,
+                )
             }
         }
 
@@ -259,17 +301,19 @@ private fun DashCamApp(
             entries,
             selectedTab,
             uiState.isRecording,
-            uiState.recordedBytes,
-            uiState.recordedDurationNanos,
         ) {
             val estimateSettings = uiState.activeSettings ?: settings
-            storageEstimate = RecordingStorageEstimator.estimate(
-                context = context,
-                settings = estimateSettings,
-                entries = entries,
-                liveRecordedBytes = uiState.recordedBytes,
-                liveRecordedDurationNanos = uiState.recordedDurationNanos,
-            )
+            while (true) {
+                storageEstimate = RecordingStorageEstimator.estimate(
+                    context = context,
+                    settings = estimateSettings,
+                    entries = entries,
+                )
+                if (!uiState.isRecording) {
+                    break
+                }
+                delay(RECORDING_STORAGE_ESTIMATE_REFRESH_MILLIS)
+            }
         }
 
         LaunchedEffect(uiState.isRecording, uiState.message, uiState.fallbackGuidance) {
@@ -297,11 +341,38 @@ private fun DashCamApp(
         }
 
         val activePlaybackEntry = playbackEntry
+        val shareRecording: (RecordingEntry) -> Unit = { entry ->
+            eventLogger.log(
+                event = "share_requested",
+                fields = mapOf(
+                    "entryId" to entry.id,
+                    "filePath" to entry.filePath,
+                    "sizeBytes" to entry.sizeBytes,
+                ),
+            )
+            context.shareRecording(entry)
+                .onFailure {
+                    eventLogger.log(
+                        event = "share_failure",
+                        fields = mapOf(
+                            "entryId" to entry.id,
+                            "filePath" to entry.filePath,
+                            "sizeBytes" to entry.sizeBytes,
+                            "error" to it.message,
+                        ),
+                    )
+                    Toast.makeText(
+                        context,
+                        "分享失败：${it.message ?: "未知错误"}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+        }
         if (activePlaybackEntry != null) {
             VideoPlaybackScreen(
                 entry = activePlaybackEntry,
                 onDismiss = { playbackEntry = null },
-                onShare = { context.shareRecording(activePlaybackEntry) },
+                onShare = { shareRecording(activePlaybackEntry) },
                 onExport = { exportRecording(activePlaybackEntry) },
                 onClip = {
                     Toast.makeText(context, "剪辑功能将在后续版本加入", Toast.LENGTH_SHORT).show()
@@ -367,8 +438,36 @@ private fun DashCamApp(
                         entries = entries,
                         recordingState = uiState,
                         onOpenPlayback = { playbackEntry = it },
-                        onDelete = recordingRepository::delete,
-                        onShare = { context.shareRecording(it) },
+                        onStopRecording = {
+                            alertStore.clearLastStopAlert()
+                            stopAlert = null
+                            context.stopRecordingService()
+                        },
+                        onDelete = { entry ->
+                            recordingRepository.delete(entry)
+                            eventLogger.log(
+                                event = "delete_recording",
+                                fields = mapOf(
+                                    "reason" to "manual_single",
+                                    "entryId" to entry.id,
+                                    "filePath" to entry.filePath,
+                                    "sizeBytes" to entry.sizeBytes,
+                                ),
+                            )
+                        },
+                        onDeleteAll = { targets, reason ->
+                            val deletedCount = recordingRepository.deleteAll(targets)
+                            eventLogger.log(
+                                event = "delete_recordings_bulk",
+                                fields = mapOf(
+                                    "reason" to reason,
+                                    "requestedCount" to targets.size,
+                                    "deletedCount" to deletedCount,
+                                    "totalSizeBytes" to targets.sumOf { it.sizeBytes },
+                                ),
+                            )
+                        },
+                        onShare = shareRecording,
                         onExport = exportRecording,
                     )
                     2 -> SettingsScreen(
@@ -493,6 +592,7 @@ private fun RecordingStatusCard(
 ) {
     val displayMessage = stopAlert?.let { "上次录制停止：${it.message}" } ?: stateMessage
     val displayGuidance = stopAlert?.fallbackGuidance ?: fallbackGuidance
+    val displayStopReason = stopAlert?.reason?.stopReasonLabel()
 
     Card(
         colors = CardDefaults.cardColors(
@@ -518,6 +618,13 @@ private fun RecordingStatusCard(
                     MaterialTheme.colorScheme.onSurface
                 },
             )
+            if (!displayStopReason.isNullOrBlank()) {
+                Text(
+                    "停止类型：$displayStopReason",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (safetyDecision != null) {
                 Text(
                     safetyDecision.message,
@@ -923,6 +1030,33 @@ private fun SettingSwitchRow(
     }
 }
 
+private data class RecordingCleanupRequest(
+    val title: String,
+    val description: String,
+    val entries: List<RecordingEntry>,
+    val reasonKey: String,
+) {
+    val totalSizeBytes: Long = entries.sumOf { it.sizeBytes }
+}
+
+private enum class CleanupRetentionOption(
+    val key: String,
+    val label: String,
+    val millis: Long,
+) {
+    OneYear("one_year", "一年", 365L * 24L * 60L * 60L * 1000L),
+    HalfYear("half_year", "半年", 183L * 24L * 60L * 60L * 1000L),
+    OneMonth("one_month", "一月", 30L * 24L * 60L * 60L * 1000L),
+    HalfMonth("half_month", "半月", 15L * 24L * 60L * 60L * 1000L),
+    OneWeek("one_week", "一周", 7L * 24L * 60L * 60L * 1000L),
+    OneDay("one_day", "1天", 24L * 60L * 60L * 1000L),
+    SixHours("six_hours", "6小时", 6L * 60L * 60L * 1000L),
+    ThreeHours("three_hours", "3小时", 3L * 60L * 60L * 1000L),
+    OneHour("one_hour", "1小时", 60L * 60L * 1000L);
+
+    fun cutoffMillis(): Long = System.currentTimeMillis() - millis
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LibraryScreen(
@@ -930,11 +1064,15 @@ private fun LibraryScreen(
     entries: List<RecordingEntry>,
     recordingState: RecordingUiState,
     onOpenPlayback: (RecordingEntry) -> Unit,
+    onStopRecording: () -> Unit,
     onDelete: (RecordingEntry) -> Unit,
+    onDeleteAll: (List<RecordingEntry>, String) -> Unit,
     onShare: (RecordingEntry) -> Unit,
     onExport: (RecordingEntry) -> Unit,
 ) {
     var pendingDelete by remember { mutableStateOf<RecordingEntry?>(null) }
+    var pendingCleanup by remember { mutableStateOf<RecordingCleanupRequest?>(null) }
+    var showCleanupMenu by remember { mutableStateOf(false) }
 
     pendingDelete?.let { entry ->
         DeleteRecordingDialog(
@@ -943,6 +1081,17 @@ private fun LibraryScreen(
             onConfirm = {
                 pendingDelete = null
                 onDelete(entry)
+            },
+        )
+    }
+
+    pendingCleanup?.let { request ->
+        CleanupRecordingsDialog(
+            request = request,
+            onDismiss = { pendingCleanup = null },
+            onConfirm = {
+                pendingCleanup = null
+                onDeleteAll(request.entries, request.reasonKey)
             },
         )
     }
@@ -969,24 +1118,44 @@ private fun LibraryScreen(
     ) {
         if (recordingState.isRecording) {
             item(key = "active-recording") {
-                ActiveRecordingListItem(recordingState)
+                ActiveRecordingListItem(
+                    state = recordingState,
+                    onStop = onStopRecording,
+                )
             }
         }
         grouped.forEach { (date, dayEntries) ->
             stickyHeader {
-                Surface(
-                    color = MaterialTheme.colorScheme.surface,
-                    shadowElevation = 2.dp,
-                ) {
-                    Text(
-                        date,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
+                LibraryDateHeader(
+                    date = date,
+                    canCleanup = entries.isNotEmpty(),
+                    showCleanupMenu = showCleanupMenu,
+                    onOpenCleanupMenu = { showCleanupMenu = true },
+                    onDismissCleanupMenu = { showCleanupMenu = false },
+                    onCleanupAll = {
+                        showCleanupMenu = false
+                        pendingCleanup = RecordingCleanupRequest(
+                            title = "全部清除？",
+                            description = "将删除视频库中的全部 ${entries.size} 个视频。",
+                            entries = entries,
+                            reasonKey = "all",
+                        )
+                    },
+                    onCleanupRetention = { option ->
+                        showCleanupMenu = false
+                        val targets = entries.filter {
+                            it.startedAtMillis < option.cutoffMillis()
+                        }
+                        pendingCleanup = RecordingCleanupRequest(
+                            title = "按时间清理？",
+                            description = "将删除早于${option.label}的视频，保留最近${option.label}。",
+                            entries = targets,
+                            reasonKey = "retention_${option.key}",
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    showActions = date == grouped.keys.first(),
+                )
             }
             items(dayEntries, key = { it.id }) { entry ->
                 RecordingListItem(
@@ -1002,8 +1171,63 @@ private fun LibraryScreen(
 }
 
 @Composable
+private fun LibraryDateHeader(
+    date: String,
+    canCleanup: Boolean,
+    showCleanupMenu: Boolean,
+    onOpenCleanupMenu: () -> Unit,
+    onDismissCleanupMenu: () -> Unit,
+    onCleanupAll: () -> Unit,
+    onCleanupRetention: (CleanupRetentionOption) -> Unit,
+    modifier: Modifier = Modifier,
+    showActions: Boolean,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 2.dp,
+        modifier = modifier,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                date,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (showActions && canCleanup) {
+                Box {
+                    IconButton(onClick = onOpenCleanupMenu) {
+                        Icon(Icons.Filled.DeleteSweep, contentDescription = "清理")
+                    }
+                    DropdownMenu(
+                        expanded = showCleanupMenu,
+                        onDismissRequest = onDismissCleanupMenu,
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("全部清除") },
+                            onClick = onCleanupAll,
+                        )
+                        CleanupRetentionOption.entries.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text("保留${option.label}") },
+                                onClick = { onCleanupRetention(option) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+@Composable
 private fun ActiveRecordingListItem(
     state: RecordingUiState,
+    onStop: () -> Unit,
 ) {
     val fileName = state.currentSegmentPath
         ?.let { File(it).name }
@@ -1033,7 +1257,7 @@ private fun ActiveRecordingListItem(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    "正在写入 · ${state.recordedDurationNanos.formatDurationNanos()} · ${state.recordedBytes.formatBytes()}",
+                    "正在写入 · ${state.recordedDurationNanos.formatDurationNanos()} · ${state.recordedBytes.formatCoarseBytes()}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1042,6 +1266,12 @@ private fun ActiveRecordingListItem(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(onClick = onStop) {
+                Icon(Icons.Filled.Stop, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("停止")
             }
         }
     }
@@ -1062,44 +1292,68 @@ private fun RecordingListItem(
             .clickable(onClick = onClick),
     ) {
         Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .padding(10.dp)
+                .height(116.dp),
+            verticalAlignment = Alignment.Top,
         ) {
             RecordingThumbnail(entry)
             Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    entry.file.name,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    "${entry.timeLabel()} · ${entry.durationMillis.formatDuration()} · ${entry.sizeBytes.formatBytes()}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    "${entry.resolution}${entry.frameRate}fps · ${entry.codec.codecLabel()} · ${entry.dynamicRange.dynamicRangeLabel()} · ${entry.cameraLabel} · 防抖 ${entry.stabilizationMode.label()}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (entry.exported) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxSize(),
+            ) {
+                Column {
                     Text(
-                        "已导出到 Movies/DashCam",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary,
+                        entry.file.name,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.SemiBold,
                     )
+                    Text(
+                        "${entry.timeLabel()} · ${entry.durationMillis.formatDuration()} · ${entry.sizeBytes.formatBytes()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "${entry.resolution}${entry.frameRate}fps · ${entry.codec.codecLabel()} · ${entry.dynamicRange.dynamicRangeLabel()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "${entry.cameraLabel} · 防抖 ${entry.stabilizationMode.label()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (entry.exported) {
+                        Text(
+                            "已导出到 Movies/DashCam",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-            }
-            IconButton(onClick = onShare) {
-                Icon(Icons.Filled.Share, contentDescription = "分享")
-            }
-            IconButton(onClick = onExport) {
-                Icon(Icons.Filled.FileUpload, contentDescription = "导出")
-            }
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.Delete, contentDescription = "删除")
+                Spacer(Modifier.weight(1f))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onShare, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Filled.Share, contentDescription = "分享")
+                    }
+                    IconButton(onClick = onExport, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Filled.FileUpload, contentDescription = "导出")
+                    }
+                    IconButton(onClick = onDelete, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Filled.Delete, contentDescription = "删除")
+                    }
+                }
             }
         }
     }
@@ -1122,14 +1376,18 @@ private fun RecordingThumbnail(
             bitmap = bitmap!!,
             contentDescription = null,
             modifier = Modifier
-                .width(96.dp)
-                .height(54.dp),
+                .width(152.dp)
+                .height(116.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFFE2E8F0)),
+            contentScale = ContentScale.Crop,
         )
     } else {
         Box(
             modifier = Modifier
-                .width(96.dp)
-                .height(54.dp)
+                .width(152.dp)
+                .height(116.dp)
+                .clip(RoundedCornerShape(6.dp))
                 .background(Color(0xFFE2E8F0)),
             contentAlignment = Alignment.Center,
         ) {
@@ -1468,6 +1726,40 @@ private fun DeleteRecordingDialog(
 }
 
 @Composable
+private fun CleanupRecordingsDialog(
+    request: RecordingCleanupRequest,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(request.title) },
+        text = {
+            Text(
+                if (request.entries.isEmpty()) {
+                    "${request.description}\n\n当前没有符合条件的视频。"
+                } else {
+                    "${request.description}\n\n预计删除 ${request.entries.size} 个视频，释放 ${request.totalSizeBytes.formatBytes()}。此操作无法撤销。"
+                },
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                enabled = request.entries.isNotEmpty(),
+            ) {
+                Text("确认清理")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(if (request.entries.isEmpty()) "知道了" else "取消")
+            }
+        },
+    )
+}
+
+@Composable
 private fun StartRecordingDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
@@ -1508,7 +1800,10 @@ private fun Context.stopRecordingService() {
     startService(RecordingService.stopIntent(this))
 }
 
-private fun Context.shareRecording(entry: RecordingEntry) {
+private fun Context.shareRecording(entry: RecordingEntry): Result<Unit> = runCatching {
+    if (!entry.file.exists()) {
+        throw IOException("源文件不存在")
+    }
     val uri = fileProviderUri(entry.file)
     val intent = Intent(Intent.ACTION_SEND)
         .setType("video/mp4")
@@ -1670,6 +1965,15 @@ private fun Long?.formatRecordableTime(): String {
 private fun Long.formatDurationNanos(): String =
     (this / 1_000_000L).formatDuration()
 
+private fun Long.formatCoarseBytes(): String {
+    val mb = this / (1024L * 1024L)
+    return if (mb < 1024L) {
+        "$mb MB"
+    } else {
+        "${mb / 1024L} GB"
+    }
+}
+
 private fun Long.formatPlaybackTime(): String {
     val totalSeconds = this.coerceAtLeast(0L) / 1000L
     val hours = totalSeconds / 3600L
@@ -1689,6 +1993,21 @@ private fun Float.speedLabel(): String {
         toString().trimEnd('0').trimEnd('.')
     }
 }
+
+private fun String.stopReasonLabel(): String =
+    when (this) {
+        "Manual" -> "手动停止"
+        "AppSafetyStorage" -> "App 安全空间不足"
+        "AppSafetyThermal" -> "设备温度保护"
+        "AppSafetyBattery" -> "电量保护"
+        "AppSafetyPipeline" -> "录制管线保护"
+        "CameraXError" -> "CameraX 录制错误"
+        "SourceInactive" -> "相机源中断"
+        "PermissionMissing" -> "权限缺失"
+        "SystemInterrupted" -> "系统中断"
+        "Unknown" -> "未知原因"
+        else -> this
+    }
 
 private fun StabilizationMode.label(): String = when (this) {
     StabilizationMode.Off -> "关"
@@ -1713,3 +2032,5 @@ private fun RecordingDowngradeReason.label(): String = when (this) {
     RecordingDowngradeReason.Thermal -> "设备发热"
     RecordingDowngradeReason.Battery -> "电量偏低"
 }
+
+private const val RECORDING_STORAGE_ESTIMATE_REFRESH_MILLIS = 15_000L

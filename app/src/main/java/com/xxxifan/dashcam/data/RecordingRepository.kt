@@ -50,16 +50,38 @@ class RecordingRepository(
         persist(next)
     }
 
+    fun deleteAll(entries: List<RecordingEntry>): Int {
+        if (entries.isEmpty()) {
+            return 0
+        }
+        val ids = entries.map { it.id }.toSet()
+        entries.forEach { entry ->
+            entry.file.delete()
+            entry.thumbnailPath?.let { File(it).delete() }
+            mmkv.removeValueForKey(recordingKey(entry.id))
+        }
+        val next = loadEntries().filterNot { it.id in ids }
+        persist(next)
+        return entries.size
+    }
+
     fun refresh() {
         val existing = loadEntries().filter { File(it.filePath).exists() }
         persist(existing, notify = false)
     }
 
-    fun refreshFromDirectory(directory: File) {
-        val existing = loadEntries().filter { File(it.filePath).exists() }
+    fun refreshFromDirectory(
+        directory: File,
+        excludedPaths: Set<String> = emptySet(),
+    ) {
+        val normalizedExcludedPaths = excludedPaths.map { File(it).absolutePath }.toSet()
+        val existing = loadEntries()
+            .filter { File(it.filePath).exists() }
+            .filterNot { File(it.filePath).absolutePath in normalizedExcludedPaths }
         val existingPaths = existing.map { it.filePath }.toSet()
         val scanned = directory.listFiles { file -> file.isFile && file.extension.equals("mp4", ignoreCase = true) }
             .orEmpty()
+            .filterNot { it.absolutePath in normalizedExcludedPaths }
             .filterNot { it.absolutePath in existingPaths }
             .map { RecordingEntry.fromFile(it) }
         persist((existing + scanned).sortedByDescending { it.startedAtMillis }, notify = false)
