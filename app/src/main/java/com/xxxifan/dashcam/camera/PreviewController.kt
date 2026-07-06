@@ -1,6 +1,7 @@
 package com.xxxifan.dashcam.camera
 
 import android.content.Context
+import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.Camera2CameraInfo
@@ -11,6 +12,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import com.xxxifan.dashcam.data.FocusMode
 import com.xxxifan.dashcam.data.RecordingSettings
 import com.xxxifan.dashcam.data.coerceCropZoomRatio
 
@@ -88,6 +90,15 @@ object PreviewController {
             CaptureRequest.CONTROL_ZOOM_RATIO,
             settings.cropZoomRatio.coerceCropZoomRatio(),
         )
+        when (settings.focusMode) {
+            FocusMode.Farthest -> {
+                extender.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                extender.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, 0.0f)
+            }
+            FocusMode.Auto -> {
+                extender.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            }
+        }
         return builder.build().also {
             it.surfaceProvider = previewView.surfaceProvider
         }

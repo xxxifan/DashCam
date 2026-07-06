@@ -23,6 +23,7 @@ class RecordingSettingsStore(
             cameraLabel = mmkv.decodeString(KEY_CAMERA_LABEL, "1X 主镜头") ?: "1X 主镜头",
             cropZoomRatio = mmkv.decodeFloat(KEY_CROP_ZOOM_RATIO, DEFAULT_CROP_ZOOM_RATIO)
                 .coerceCropZoomRatio(),
+            focusMode = decodeFocusMode(),
             autoDowngradeEnabled = mmkv.decodeBool(KEY_AUTO_DOWNGRADE, true),
             reservePercent = mmkv.decodeInt(KEY_RESERVE_PERCENT, 10),
             loopQuotaBytes = mmkv.decodeLong(KEY_LOOP_QUOTA_BYTES, 0L).takeIf { it > 0L },
@@ -49,6 +50,7 @@ class RecordingSettingsStore(
         mmkv.encode(KEY_CAMERA_ID, settings.cameraId)
         mmkv.encode(KEY_CAMERA_LABEL, settings.cameraLabel)
         mmkv.encode(KEY_CROP_ZOOM_RATIO, settings.cropZoomRatio.coerceCropZoomRatio())
+        mmkv.encode(KEY_FOCUS_MODE, settings.focusMode.name)
         mmkv.encode(KEY_AUTO_DOWNGRADE, settings.autoDowngradeEnabled)
         mmkv.encode(KEY_RESERVE_PERCENT, settings.reservePercent)
         mmkv.encode(KEY_LOOP_QUOTA_BYTES, settings.loopQuotaBytes ?: 0L)
@@ -59,6 +61,13 @@ class RecordingSettingsStore(
         return runCatching {
             StabilizationMode.valueOf(name ?: StabilizationMode.Standard.name)
         }.getOrDefault(StabilizationMode.Standard)
+    }
+
+    private fun decodeFocusMode(): FocusMode {
+        val name = mmkv.decodeString(KEY_FOCUS_MODE, FocusMode.Farthest.name)
+        return runCatching {
+            FocusMode.valueOf(name ?: FocusMode.Farthest.name)
+        }.getOrDefault(FocusMode.Farthest)
     }
 
     private fun decodeAudioProcessingMode(): AudioProcessingMode {
@@ -96,6 +105,7 @@ class RecordingSettingsStore(
         const val KEY_CAMERA_ID = "camera_id"
         const val KEY_CAMERA_LABEL = "camera_label"
         const val KEY_CROP_ZOOM_RATIO = "crop_zoom_ratio"
+        const val KEY_FOCUS_MODE = "focus_mode"
         const val KEY_AUTO_DOWNGRADE = "auto_downgrade"
         const val KEY_RESERVE_PERCENT = "reserve_percent"
         const val KEY_LOOP_QUOTA_BYTES = "loop_quota_bytes"

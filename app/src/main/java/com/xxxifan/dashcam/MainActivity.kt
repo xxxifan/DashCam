@@ -129,6 +129,7 @@ import com.xxxifan.dashcam.camera.isRecordingCombinationSupported
 import com.xxxifan.dashcam.camera.toLogFields
 import com.xxxifan.dashcam.data.AppGuidanceStore
 import com.xxxifan.dashcam.data.BitratePreset
+import com.xxxifan.dashcam.data.FocusMode
 import com.xxxifan.dashcam.data.PlaybackPreferencesStore
 import com.xxxifan.dashcam.data.RecordingAlertStore
 import com.xxxifan.dashcam.data.RecordingEntry
@@ -760,6 +761,7 @@ private fun RecordingStatusChips(
         AssistChip(onClick = {}, label = { Text("防抖 ${settings.stabilizationMode.label()}") })
         AssistChip(onClick = {}, label = { Text(settings.cameraLabel) })
         AssistChip(onClick = {}, label = { Text("裁剪 ${settings.cropZoomRatio.zoomRatioLabel()}") })
+        AssistChip(onClick = {}, label = { Text("对焦 ${settings.focusMode.label()}") })
         AssistChip(
             onClick = {},
             label = { Text("剩余 ${storageEstimate.remainingBytes.formatBytes()}") },
@@ -950,6 +952,26 @@ private fun SettingsScreen(
                                 label = { Text(option.label) },
                             )
                         }
+                    }
+                }
+            }
+        }
+        item {
+            SettingsSection("对焦模式") {
+                Text(
+                    "自动：持续对焦；最远：关闭自动对焦并锁定到无穷远，适合行车拍摄。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FocusMode.entries.forEach { mode ->
+                        FilterChip(
+                            enabled = !isRecording,
+                            selected = settings.focusMode == mode,
+                            onClick = { onSettingsChange { it.copy(focusMode = mode) } },
+                            label = { Text(mode.label()) },
+                        )
                     }
                 }
             }
@@ -2361,6 +2383,11 @@ private fun String.stopReasonLabel(): String =
         "Unknown" -> "未知原因"
         else -> this
     }
+
+private fun FocusMode.label(): String = when (this) {
+    FocusMode.Auto -> "自动"
+    FocusMode.Farthest -> "最远"
+}
 
 private fun StabilizationMode.label(): String = when (this) {
     StabilizationMode.Off -> "关"

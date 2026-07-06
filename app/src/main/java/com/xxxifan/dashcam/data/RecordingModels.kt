@@ -24,6 +24,11 @@ enum class AudioProcessingMode {
     Camcorder,
 }
 
+enum class FocusMode {
+    Auto,
+    Farthest,
+}
+
 const val DEFAULT_CROP_ZOOM_RATIO = 1f
 const val MIN_CROP_ZOOM_RATIO = 1f
 const val MAX_CROP_ZOOM_RATIO = 2f
@@ -48,6 +53,7 @@ data class RecordingSettings(
     val cameraId: String = "",
     val cameraLabel: String = "1X 主镜头",
     val cropZoomRatio: Float = DEFAULT_CROP_ZOOM_RATIO,
+    val focusMode: FocusMode = FocusMode.Farthest,
     val autoDowngradeEnabled: Boolean = true,
     val reservePercent: Int = 10,
     val loopQuotaBytes: Long? = null,
