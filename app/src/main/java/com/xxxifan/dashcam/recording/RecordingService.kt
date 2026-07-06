@@ -9,13 +9,20 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraMetadata
+import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.os.BatteryManager
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import android.util.Range
+import android.util.Size
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.core.CameraInfo
@@ -23,6 +30,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.HighSpeedVideoSessionConfig
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.Recorder
@@ -42,6 +50,7 @@ import com.xxxifan.dashcam.camera.CameraCapabilitiesRepository
 import com.xxxifan.dashcam.camera.CameraSelectionId
 import com.xxxifan.dashcam.camera.codecLabel
 import com.xxxifan.dashcam.camera.coerceToSupportedCombination
+import com.xxxifan.dashcam.camera.frameRateOptionsForResolution
 import com.xxxifan.dashcam.camera.isHdrDynamicRange
 import com.xxxifan.dashcam.camera.toCameraXDynamicRange
 import com.xxxifan.dashcam.camera.toLogFields
@@ -207,7 +216,9 @@ class RecordingService : LifecycleService() {
             event = "camera_hdr_diagnostics",
             fields = capabilities.hdrDiagnostics.toLogFields() + mapOf("source" to "recording_service"),
         )
-        val supportedRequestedSettings = requestedSettings.coerceToCapabilities(capabilities)
+        val supportedRequestedSettings = requestedSettings
+            .coerceToCapabilities(capabilities)
+            .coerceToSupportedCombination(capabilities)
         val resolvedSettings = RecordingQualityResolver.resolveAutoQuality(
             context = this,
             requested = supportedRequestedSettings,
@@ -238,6 +249,200 @@ class RecordingService : LifecycleService() {
                 "downgradeReasons" to startupSettings.downgradeState?.reasons?.map { it.name },
             ),
         )
+        provider.unbindAll()
+        val capture = bindRecordingCapture(provider, settings)
+        if (capture == null) {
+            stopWithMessage(
+                message = "${settings.resolution}${settings.frameRate}fps 无法开启当前录制组合。",
+                fallbackGuidance = "DashCam 已拒绝会产出伪高帧率或坏文件的录制路径；请先切到 30fps，或查看 FPS_CHECK 日志确认 CameraX 官方高速能力。",
+                reason = RecordingStopReason.CameraXError,
+            )
+            return
+        }
+        videoCapture = capture
+        startNewSegment(settings, startupSettings.message)
+        startHealthMonitoring()
+    }
+
+    private fun bindRecordingCapture(
+        provider: ProcessCameraProvider,
+        settings: RecordingSettings,
+    ): VideoCapture<Recorder>? {
+        val selector = cameraSelectorFor(settings)
+        val useHighSpeed = settings.requiresHighSpeedSession()
+        if (useHighSpeed) {
+            bindHighSpeedRecordingCapture(provider, selector, settings)
+                ?.let { return it }
+            val message = "High-speed recording unavailable; refusing to record fake high-fps video."
+            Log.w(TAG, message)
+            Log.w(FPS_CHECK_TAG, message)
+            return null
+        }
+        if (settings.frameRate > MAX_REGULAR_FRAME_RATE) {
+            val message = "Refusing regular recording session above ${MAX_REGULAR_FRAME_RATE}fps."
+            Log.w(TAG, message)
+            Log.w(FPS_CHECK_TAG, message)
+            eventLogger.logRecordingSettings(
+                event = "regular_session_rejected",
+                settings = settings,
+                fields = mapOf(
+                    "reason" to "fps_above_regular_session_limit",
+                    "maxRegularFrameRate" to MAX_REGULAR_FRAME_RATE,
+                ),
+            )
+            return null
+        }
+        val recorder = buildRecorder(settings)
+        val captureBuilder = VideoCapture.Builder(recorder)
+            .setTargetFrameRate(settings.frameRate.asFixedRange())
+            .setDynamicRange(settings.dynamicRange.toCameraXDynamicRange())
+            .setVideoStabilizationEnabled(settings.stabilizationMode != StabilizationMode.Off)
+        applyCamera2Options(captureBuilder, settings, applyAeFrameRate = true)
+        val capture = captureBuilder.build()
+        provider.bindToLifecycle(this, selector, capture)
+        eventLogger.logRecordingSettings(
+            event = "recording_session_bound",
+            settings = settings,
+            fields = mapOf(
+                "sessionType" to "regular",
+                "targetFrameRate" to settings.frameRate.asFixedRange().toString(),
+            ),
+        )
+        return capture
+    }
+
+    private fun bindHighSpeedRecordingCapture(
+        provider: ProcessCameraProvider,
+        selector: CameraSelector,
+        settings: RecordingSettings,
+    ): VideoCapture<Recorder>? {
+        val cameraInfo = provider.cameraInfoFor(settings)
+        if (cameraInfo == null) {
+            Log.w(TAG, "No CameraInfo available for high-speed recording.")
+            Log.w(FPS_CHECK_TAG, "No CameraInfo available for high-speed recording.")
+            return null
+        }
+        val highSpeedCapabilities = runCatching {
+            Recorder.getHighSpeedVideoCapabilities(cameraInfo)
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to query CameraX high-speed video capabilities.", error)
+            Log.w(FPS_CHECK_TAG, "Failed to query CameraX high-speed video capabilities.", error)
+        }.getOrNull()
+        if (highSpeedCapabilities == null) {
+            Log.w(TAG, "CameraX high-speed video capabilities are not available.")
+            Log.w(FPS_CHECK_TAG, "CameraX high-speed video capabilities are not available.")
+            eventLogger.logRecordingSettings(
+                event = "high_speed_capabilities_unavailable",
+                settings = settings,
+            )
+            return null
+        }
+        val dynamicRange = settings.dynamicRange.toCameraXDynamicRange()
+        val supportedQualities = highSpeedCapabilities.getSupportedQualities(dynamicRange)
+        val quality = qualityFor(settings.resolution)
+        if (quality !in supportedQualities) {
+            Log.w(
+                TAG,
+                "High-speed quality $quality is not supported for $dynamicRange. supported=$supportedQualities",
+            )
+            Log.w(
+                FPS_CHECK_TAG,
+                "High-speed quality $quality is not supported for $dynamicRange. supported=$supportedQualities",
+            )
+            eventLogger.logRecordingSettings(
+                event = "high_speed_quality_unsupported",
+                settings = settings,
+                fields = mapOf(
+                    "requestedQuality" to quality.toString(),
+                    "dynamicRange" to dynamicRange.toString(),
+                    "supportedQualities" to supportedQualities.map { it.toString() },
+                ),
+            )
+            return null
+        }
+        val recorder = buildRecorder(settings, setEncodingFrameRate = false)
+        val captureBuilder = VideoCapture.Builder(recorder)
+            .setDynamicRange(settings.dynamicRange.toCameraXDynamicRange())
+            .setVideoStabilizationEnabled(false)
+        applyCamera2Options(captureBuilder, settings, applyAeFrameRate = false)
+        val capture = captureBuilder.build()
+        val sessionBuilder = HighSpeedVideoSessionConfig.Builder(capture)
+            .setSlowMotionEnabled(false)
+        val supportedFrameRates = cameraInfo
+            .supportedHighSpeedFrameRates(sessionBuilder.build())
+        val requestedFrameRate = settings.frameRate.asFixedRange()
+        val camera2HighSpeedFrameRates = highSpeedFrameRatesForResolution(settings)
+        val sessionFrameRate = supportedFrameRates.bestExactHighSpeedRangeFor(settings.frameRate)
+        Log.d(
+            TAG,
+            "High-speed session candidate requested=$requestedFrameRate " +
+                "sessionRange=$sessionFrameRate supportedQualities=$supportedQualities " +
+                "cameraXSupported=$supportedFrameRates " +
+                "camera2Supported=$camera2HighSpeedFrameRates",
+        )
+        Log.d(
+            FPS_CHECK_TAG,
+            "High-speed session candidate requested=$requestedFrameRate " +
+                "sessionRange=$sessionFrameRate supportedQualities=$supportedQualities " +
+                "cameraXSupported=$supportedFrameRates " +
+                "camera2Supported=$camera2HighSpeedFrameRates",
+        )
+        eventLogger.logRecordingSettings(
+            event = "high_speed_session_candidate",
+            settings = settings,
+            fields = mapOf(
+                "requestedFrameRate" to requestedFrameRate.toString(),
+                "sessionFrameRateRange" to sessionFrameRate?.toString(),
+                "supportedQualities" to supportedQualities.map { it.toString() },
+                "cameraXSupportedFrameRates" to supportedFrameRates.map { it.toString() },
+                "camera2SupportedFrameRates" to camera2HighSpeedFrameRates.map { it.toString() },
+            ),
+        )
+        if (sessionFrameRate == null) {
+            return null
+        }
+        val sessionConfig = sessionBuilder
+            .setFrameRateRange(sessionFrameRate)
+            .build()
+        return runCatching {
+            provider.bindToLifecycle(this, selector, sessionConfig)
+            eventLogger.logRecordingSettings(
+                event = "recording_session_bound",
+                settings = settings,
+                fields = mapOf(
+                    "sessionType" to "high_speed",
+                    "targetFrameRate" to requestedFrameRate.toString(),
+                    "sessionFrameRateRange" to sessionFrameRate.toString(),
+                    "supportedQualities" to supportedQualities.map { it.toString() },
+                    "cameraXSupportedFrameRates" to supportedFrameRates.map { it.toString() },
+                    "camera2SupportedFrameRates" to camera2HighSpeedFrameRates.map { it.toString() },
+                ),
+            )
+            Log.d(TAG, "Bound high-speed recording session at $sessionFrameRate.")
+            Log.d(FPS_CHECK_TAG, "Bound high-speed recording session at $sessionFrameRate.")
+            capture
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to bind high-speed recording session.", error)
+            Log.w(FPS_CHECK_TAG, "Failed to bind high-speed recording session.", error)
+            eventLogger.logRecordingSettings(
+                event = "high_speed_session_bind_failed",
+                settings = settings,
+                fields = mapOf(
+                    "requestedFrameRate" to requestedFrameRate.toString(),
+                    "sessionFrameRateRange" to sessionFrameRate.toString(),
+                    "supportedQualities" to supportedQualities.map { it.toString() },
+                    "cameraXSupportedFrameRates" to supportedFrameRates.map { it.toString() },
+                    "camera2SupportedFrameRates" to camera2HighSpeedFrameRates.map { it.toString() },
+                    "error" to (error.message ?: error::class.java.simpleName),
+                ),
+            )
+        }.getOrNull()
+    }
+
+    private fun buildRecorder(
+        settings: RecordingSettings,
+        setEncodingFrameRate: Boolean = true,
+    ): Recorder {
         val recorderBuilder = Recorder.Builder()
             .setQualitySelector(
                 QualitySelector.from(
@@ -246,25 +451,11 @@ class RecordingService : LifecycleService() {
                 ),
             )
         applyRecorderOptions(recorderBuilder, settings)
-        val recorder = recorderBuilder.build()
-        recorder.setVideoEncodingFrameRate(settings.frameRate)
-        val captureBuilder = VideoCapture.Builder(recorder)
-            .setTargetFrameRate(Range(settings.frameRate, settings.frameRate))
-            .setDynamicRange(settings.dynamicRange.toCameraXDynamicRange())
-            .setVideoStabilizationEnabled(settings.stabilizationMode != StabilizationMode.Off)
-        applyCamera2Options(captureBuilder, settings)
-        val capture = captureBuilder.build()
-
-        provider.unbindAll()
-        val selector = cameraSelectorFor(settings)
-        provider.bindToLifecycle(
-            this,
-            selector,
-            capture,
-        )
-        videoCapture = capture
-        startNewSegment(settings, startupSettings.message)
-        startHealthMonitoring()
+        return recorderBuilder.build().also { recorder ->
+            if (setEncodingFrameRate) {
+                recorder.setVideoEncodingFrameRate(settings.frameRate)
+            }
+        }
     }
 
     private fun resolveStartupSettings(
@@ -861,16 +1052,20 @@ class RecordingService : LifecycleService() {
     private fun applyCamera2Options(
         builder: VideoCapture.Builder<Recorder>,
         settings: RecordingSettings,
+        applyAeFrameRate: Boolean,
     ) {
         val extender = Camera2Interop.Extender(builder)
         val physicalCameraId = CameraSelectionId.physicalCameraId(settings.cameraId)
         if (!physicalCameraId.isNullOrBlank()) {
             extender.setPhysicalCameraId(physicalCameraId)
         }
-        extender.setCaptureRequestOption(
-            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-            Range(settings.frameRate, settings.frameRate),
-        )
+        if (applyAeFrameRate) {
+            extender.setCaptureRequestOption(
+                CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                settings.frameRate.asFixedRange(),
+            )
+        }
+        extender.setSessionCaptureCallback(captureResultFpsLogger(settings))
         extender.setCaptureRequestOption(
             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
             settings.stabilizationMode.toCaptureRequestValue(),
@@ -895,11 +1090,90 @@ class RecordingService : LifecycleService() {
             ?.let { builder.setTargetAudioEncodingBitRate(it) }
     }
 
+    private fun captureResultFpsLogger(
+        settings: RecordingSettings,
+    ): CameraCaptureSession.CaptureCallback =
+        object : CameraCaptureSession.CaptureCallback() {
+            private var lastRange: Range<Int>? = null
+            private var lastLogMillis = 0L
+
+            override fun onCaptureCompleted(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult,
+            ) {
+                val resultRange = result.get(CaptureResult.CONTROL_AE_TARGET_FPS_RANGE)
+                val now = SystemClock.elapsedRealtime()
+                if (
+                    resultRange == lastRange &&
+                    now - lastLogMillis < CAPTURE_RESULT_FPS_LOG_INTERVAL_MILLIS
+                ) {
+                    return
+                }
+                lastRange = resultRange
+                lastLogMillis = now
+                Log.d(
+                    FPS_CHECK_TAG,
+                    "Capture result fps " +
+                        "settings=${settings.resolution}${settings.frameRate}fps " +
+                        "codec=${settings.codec} dynamicRange=${settings.dynamicRange} " +
+                        "stabilization=${settings.stabilizationMode} " +
+                        "requestAe=${request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE)} " +
+                        "resultAe=$resultRange " +
+                        "frameNumber=${result.frameNumber} " +
+                        "sensorTimestamp=${result.get(CaptureResult.SENSOR_TIMESTAMP)}",
+                )
+            }
+        }
+
     private fun qualityFor(resolution: String): Quality = when (resolution) {
         "720p" -> Quality.HD
         "4K" -> Quality.UHD
         else -> Quality.FHD
     }
+
+    private fun RecordingSettings.requiresHighSpeedSession(): Boolean =
+        frameRate > 30 &&
+            !dynamicRange.isHdrDynamicRange() &&
+            stabilizationMode == StabilizationMode.Off
+
+    private fun Int.asFixedRange(): Range<Int> = Range(this, this)
+
+    private fun Set<Range<Int>>.bestExactHighSpeedRangeFor(frameRate: Int): Range<Int>? =
+        filter { range -> range.lower == frameRate && range.upper == frameRate }
+            .minWithOrNull(
+                compareBy<Range<Int>> { it.upper }
+                    .thenBy { it.lower },
+            )
+
+    private fun highSpeedFrameRatesForResolution(settings: RecordingSettings): List<Range<Int>> {
+        val logicalCameraId = CameraSelectionId.logicalCameraId(settings.cameraId)
+            .ifBlank { return emptyList() }
+        val size = settings.resolution.toVideoSize()
+        val manager = getSystemService<CameraManager>() ?: return emptyList()
+        return runCatching {
+            manager.getCameraCharacteristics(logicalCameraId)
+                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getHighSpeedVideoFpsRangesFor(size)
+                ?.toList()
+                .orEmpty()
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to query high-speed frame rates for $size.", error)
+        }.getOrDefault(emptyList())
+    }
+
+    private fun String.toVideoSize(): Size = when (this) {
+        "720p" -> Size(1280, 720)
+        "4K" -> Size(3840, 2160)
+        else -> Size(1920, 1080)
+    }
+
+    private fun CameraInfo.supportedHighSpeedFrameRates(
+        sessionConfig: HighSpeedVideoSessionConfig,
+    ): Set<Range<Int>> =
+        runCatching { getSupportedFrameRateRanges(sessionConfig) }
+            .onFailure { Log.w(TAG, "Failed to query high-speed frame rates.", it) }
+            .getOrDefault(emptySet())
 
     private fun StabilizationMode.toCaptureRequestValue(): Int = when (this) {
         StabilizationMode.Off -> CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
@@ -925,9 +1199,10 @@ class RecordingService : LifecycleService() {
             ?: capabilities.resolutionOptions.firstOrNull { it == "1080p" }
             ?: capabilities.resolutionOptions.firstOrNull()
             ?: "720p"
-        val frameRate = frameRate.takeIf { it in capabilities.frameRateOptions }
-            ?: capabilities.frameRateOptions.firstOrNull { it == 30 }
-            ?: capabilities.frameRateOptions.firstOrNull()
+        val frameRatesForResolution = capabilities.frameRateOptionsForResolution(resolution)
+        val frameRate = frameRate.takeIf { it in frameRatesForResolution }
+            ?: frameRatesForResolution.firstOrNull { it == 30 }
+            ?: frameRatesForResolution.firstOrNull()
             ?: 30
         val codec = codec.takeIf { saved -> capabilities.codecOptions.any { it.id == saved } }
             ?: capabilities.codecOptions.firstOrNull { it.id == "h265" }?.id
@@ -1048,9 +1323,12 @@ class RecordingService : LifecycleService() {
         private const val BATTERY_NOTICE_PERCENT = 20
         private const val BATTERY_DOWNGRADE_PERCENT = 10
         private const val BATTERY_EMERGENCY_PERCENT = 5
+        private const val MAX_REGULAR_FRAME_RATE = 30
         private const val PIPELINE_PRESSURE_FAILURES = 1
         private const val PIPELINE_EMERGENCY_FAILURES = 3
         private const val STATS_UI_UPDATE_INTERVAL_MILLIS = 2_000L
+        private const val CAPTURE_RESULT_FPS_LOG_INTERVAL_MILLIS = 2_000L
+        private const val FPS_CHECK_TAG = "FPS_CHECK"
 
         private val fileTimestampFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
 

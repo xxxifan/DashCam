@@ -2,6 +2,7 @@ package com.xxxifan.dashcam.recording
 
 import android.content.Context
 import com.xxxifan.dashcam.camera.CameraCapabilities
+import com.xxxifan.dashcam.camera.frameRateOptionsForResolution
 import com.xxxifan.dashcam.camera.isRecordingCombinationSupported
 import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.RecordingSettings
@@ -38,13 +39,13 @@ object RecordingQualityResolver {
         capabilities: CameraCapabilities,
     ): List<RecordingSettings> {
         val resolutions = capabilities.resolutionOptions.sortedBy { resolutionRank(it) }
-        val frameRates = capabilities.frameRateOptions.sorted()
         val codecs = autoCodecs(requested, capabilities)
         val dynamicRanges = autoDynamicRanges(requested, capabilities)
         val stabilizationModes = autoStabilizationModes(requested, capabilities)
 
         return buildList {
             resolutions.forEach { resolution ->
+                val frameRates = capabilities.frameRateOptionsForResolution(resolution).sorted()
                 frameRates.forEach { frameRate ->
                     listOf(BitratePreset.SpaceSaver, BitratePreset.Standard, BitratePreset.HighQuality).forEach { preset ->
                         codecs.forEach { codec ->

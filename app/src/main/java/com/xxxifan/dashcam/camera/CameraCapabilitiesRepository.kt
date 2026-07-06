@@ -7,17 +7,26 @@ import android.hardware.camera2.CameraExtensionCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.params.DynamicRangeProfiles
+import android.hardware.camera2.params.StreamConfigurationMap
+import android.media.CamcorderProfile
+import android.media.EncoderProfiles
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.media.MediaRecorder
 import android.util.Log
+import android.util.Range
 import android.util.Size
 import androidx.camera.core.CameraInfo
 import androidx.camera.core.DynamicRange
+import androidx.camera.video.HighSpeedVideoSessionConfig
 import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
 import androidx.camera.video.Recorder
 import androidx.camera.video.VideoCapabilities
+import androidx.camera.video.VideoCapture
 import androidx.core.content.getSystemService
 import com.xxxifan.dashcam.data.StabilizationMode
+import kotlin.math.roundToInt
 
 class CameraCapabilitiesRepository(
     context: Context,
@@ -30,7 +39,23 @@ class CameraCapabilitiesRepository(
         val characteristics = logicalBackCamera?.let { runCatching { manager.getCameraCharacteristics(it) }.getOrNull() }
         val cameraOptions = manager?.let { backCameraOptions(it) } ?: fallbackCameraOptions()
         val resolutionOptions = characteristics?.resolutionOptions().orDefaultResolutions()
-        val frameRateOptions = characteristics?.frameRateOptions().orDefaultFrameRates()
+        val officialHighSpeedFrameRateOptionsByResolution = cameraInfo
+            ?.officialHighSpeedFrameRateOptionsByResolution(resolutionOptions)
+            .orEmpty()
+        val frameRateOptionsByResolution = characteristics
+            ?.frameRateOptionsByResolution(
+                cameraId = logicalBackCamera.orEmpty(),
+                cameraInfo = cameraInfo,
+                resolutionOptions = resolutionOptions,
+                officialHighSpeedFrameRateOptionsByResolution = officialHighSpeedFrameRateOptionsByResolution,
+            )
+            .orDefaultFrameRatesByResolution(resolutionOptions)
+        val frameRateOptions = frameRateOptionsByResolution
+            .values
+            .flatten()
+            .distinct()
+            .sorted()
+            .orDefaultFrameRates()
         val codecOptions = codecOptions()
         val camera2DynamicRangeOptions = characteristics?.camera2DynamicRangeOptions().orDefaultDynamicRanges()
         val cameraXProbe = cameraInfo?.cameraXRecordingDynamicRangeProbe()
@@ -42,7 +67,8 @@ class CameraCapabilitiesRepository(
         val combinations = recordingCombinations(
             cameraInfo = cameraInfo,
             resolutionOptions = resolutionOptions,
-            frameRateOptions = frameRateOptions,
+            frameRateOptionsByResolution = frameRateOptionsByResolution,
+            highSpeedFrameRateOptionsByResolution = officialHighSpeedFrameRateOptionsByResolution,
             codecOptions = codecOptions,
             dynamicRangeOptions = dynamicRangeOptions,
             stabilizationModes = stabilizationModes,
@@ -58,6 +84,8 @@ class CameraCapabilitiesRepository(
             cameraOptions = cameraOptions,
             resolutionOptions = resolutionOptions,
             frameRateOptions = frameRateOptions,
+            frameRateOptionsByResolution = frameRateOptionsByResolution,
+            highSpeedFrameRateOptionsByResolution = officialHighSpeedFrameRateOptionsByResolution,
             codecOptions = codecOptions,
             dynamicRangeOptions = dynamicRangeOptions,
             stabilizationModes = stabilizationModes,
@@ -186,11 +214,76 @@ class CameraCapabilitiesRepository(
         }
     }
 
-    private fun CameraCharacteristics.frameRateOptions(): List<Int> {
-        val ranges = get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
-        return listOf(24, 30, 60).filter { fps ->
-            ranges.any { range -> range.lower <= fps && range.upper >= fps }
+    private fun CameraCharacteristics.frameRateOptionsByResolution(
+        cameraId: String,
+        cameraInfo: CameraInfo?,
+        resolutionOptions: List<String>,
+        officialHighSpeedFrameRateOptionsByResolution: Map<String, List<Int>>,
+    ): Map<String, List<Int>> {
+        val streamMap = get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val recorderSizes = streamMap
+            ?.getOutputSizes(MediaRecorder::class.java)
+            ?.toList()
+            .orEmpty()
+        val camera2Ranges = get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            .orEmpty()
+            .toList()
+        val cameraXRanges = cameraInfo
+            ?.let { runCatching { it.supportedFrameRateRanges.toList() }.getOrDefault(emptyList()) }
+            .orEmpty()
+        val profileFrameRateOptionsByResolution = encoderProfileFrameRateOptionsByResolution(
+            cameraId = cameraId,
+            resolutionOptions = resolutionOptions,
+        )
+        val highSpeedFrameRateOptionsByResolution = streamMap.highSpeedFrameRateOptionsByResolution(
+            resolutionOptions = resolutionOptions,
+        )
+        val samsungVendorRanges = samsungEffectAeFrameRateRanges()
+        val samsungVendorFrameRateOptionsByResolution = samsungVendorRanges
+            .samsungFrameRateOptionsByResolution(resolutionOptions)
+        val fallbackRanges = cameraXRanges.ifEmpty { camera2Ranges }
+        val result = resolutionOptions.associateWith { resolution ->
+            val matchingSizes = recorderSizes.exactSizesForResolution(resolution)
+            val maxFps = matchingSizes.maxOfOrNull { size ->
+                runCatching {
+                    streamMap?.getOutputMinFrameDuration(MediaRecorder::class.java, size)
+                        ?.takeIf { it > 0L }
+                        ?.toMaxFps()
+                        ?: 0
+                }.getOrDefault(0)
+            } ?: 0
+            val sizeLimitedOptions = candidateFrameRates
+                .filter { fps -> maxFps >= fps }
+            val profileOptions = profileFrameRateOptionsByResolution[resolution].orEmpty()
+            val highSpeedOptions = highSpeedFrameRateOptionsByResolution[resolution].orEmpty()
+            val samsungVendorOptions = samsungVendorFrameRateOptionsByResolution[resolution].orEmpty()
+            val recordingOptions = (
+                sizeLimitedOptions +
+                    profileOptions +
+                    highSpeedOptions +
+                    samsungVendorOptions
+                )
+                .distinct()
+                .sorted()
+            val fallbackOptions = candidateFrameRates
+                .filter { fps -> fallbackRanges.supportsFps(fps) }
+            recordingOptions
+                .ifEmpty { fallbackOptions }
+                .ifEmpty { listOf(30) }
         }
+        logFpsDiagnostics(
+            cameraId = cameraId,
+            camera2Ranges = camera2Ranges,
+            cameraXRanges = cameraXRanges,
+            recorderSizes = recorderSizes,
+            profileFrameRateOptionsByResolution = profileFrameRateOptionsByResolution,
+            highSpeedFrameRateOptionsByResolution = highSpeedFrameRateOptionsByResolution,
+            officialHighSpeedFrameRateOptionsByResolution = officialHighSpeedFrameRateOptionsByResolution,
+            samsungVendorFrameRateOptionsByResolution = samsungVendorFrameRateOptionsByResolution,
+            samsungVendorRanges = samsungVendorRanges,
+            frameRateOptionsByResolution = result,
+        )
+        return result
     }
 
     private fun CameraCharacteristics.camera2DynamicRangeOptions(): List<DynamicRangeOption> {
@@ -257,7 +350,8 @@ class CameraCapabilitiesRepository(
     private fun recordingCombinations(
         cameraInfo: CameraInfo?,
         resolutionOptions: List<String>,
-        frameRateOptions: List<Int>,
+        frameRateOptionsByResolution: Map<String, List<Int>>,
+        highSpeedFrameRateOptionsByResolution: Map<String, List<Int>>,
         codecOptions: List<VideoCodecOption>,
         dynamicRangeOptions: List<DynamicRangeOption>,
         stabilizationModes: List<StabilizationMode>,
@@ -279,7 +373,18 @@ class CameraCapabilitiesRepository(
                         ?.let { supported -> resolutionOptions.filter { it in supported } }
                         ?: resolutionOptions
                     resolutions.forEach { resolution ->
+                        val frameRateOptions = frameRateOptionsByResolution[resolution]
+                            .orDefaultFrameRates()
                         frameRateOptions.forEach { frameRate ->
+                            if (
+                                frameRate > MAX_REGULAR_FRAME_RATE &&
+                                frameRate !in highSpeedFrameRateOptionsByResolution[resolution].orEmpty()
+                            ) {
+                                return@forEach
+                            }
+                            if (!codec.supportsResolutionFrameRate(resolution, frameRate)) {
+                                return@forEach
+                            }
                             stabilizationModes
                                 .filter { mode -> videoCapabilities.supportsStabilizationMode(mode) }
                                 .forEach { stabilizationMode ->
@@ -465,6 +570,32 @@ class CameraCapabilitiesRepository(
         )
     }
 
+    private fun logFpsDiagnostics(
+        cameraId: String,
+        camera2Ranges: List<Range<Int>>,
+        cameraXRanges: List<Range<Int>>,
+        recorderSizes: List<Size>,
+        profileFrameRateOptionsByResolution: Map<String, List<Int>>,
+        highSpeedFrameRateOptionsByResolution: Map<String, List<Int>>,
+        officialHighSpeedFrameRateOptionsByResolution: Map<String, List<Int>>,
+        samsungVendorFrameRateOptionsByResolution: Map<String, List<Int>>,
+        samsungVendorRanges: List<Range<Int>>,
+        frameRateOptionsByResolution: Map<String, List<Int>>,
+    ) {
+        Log.d(
+            FPS_CHECK_TAG,
+            "camera=$cameraId, Camera2 fps=${camera2Ranges.rangeLabels()}, " +
+                "CameraX fps=${cameraXRanges.rangeLabels()}, " +
+                "profiles=$profileFrameRateOptionsByResolution, " +
+                "highSpeed=$highSpeedFrameRateOptionsByResolution, " +
+                "officialHighSpeed=$officialHighSpeedFrameRateOptionsByResolution, " +
+                "Samsung fps=${samsungVendorRanges.rangeLabels()}, " +
+                "Samsung resolved=$samsungVendorFrameRateOptionsByResolution, " +
+                "MediaRecorder sizes=${recorderSizes.sizeLabels()}, " +
+                "resolved=$frameRateOptionsByResolution",
+        )
+    }
+
     private fun CameraCharacteristics.stabilizationModes(): List<StabilizationMode> {
         val modes = get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES) ?: intArrayOf()
         return buildList {
@@ -492,17 +623,220 @@ class CameraCapabilitiesRepository(
             codec.isEncoder && codec.supportedTypes.any { it.equals(mimeType, ignoreCase = true) }
         }
 
+    private fun VideoCodecOption.supportsResolutionFrameRate(
+        resolution: String,
+        frameRate: Int,
+    ): Boolean {
+        val mimeType = mimeType ?: return true
+        val (width, height) = resolution.toTargetSize() ?: return true
+        return MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+            .filter { codec -> codec.isEncoder }
+            .filter { codec -> codec.supportedTypes.any { it.equals(mimeType, ignoreCase = true) } }
+            .any { codec ->
+                runCatching {
+                    val capabilities = codec.getCapabilitiesForType(mimeType).videoCapabilities
+                        ?: return@runCatching false
+                    capabilities.areSizeAndRateSupported(width, height, frameRate.toDouble()) ||
+                        capabilities.areSizeAndRateSupported(height, width, frameRate.toDouble())
+                }.getOrDefault(false)
+            }
+    }
+
     private fun List<Size>.supportsAtLeast(width: Int, height: Int): Boolean =
         any { size ->
             (size.width >= width && size.height >= height) ||
                 (size.width >= height && size.height >= width)
         }
 
+    private fun List<Size>.exactSizesForResolution(resolution: String): List<Size> {
+        val (width, height) = resolution.toTargetSize() ?: return emptyList()
+        return filter { it.matchesDimensions(width, height) }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun encoderProfileFrameRateOptionsByResolution(
+        cameraId: String,
+        resolutionOptions: List<String>,
+    ): Map<String, List<Int>> =
+        resolutionOptions.associateWith { resolution ->
+            val (width, height) = resolution.toTargetSize() ?: return@associateWith emptyList()
+            resolution.profileQualities().flatMap { quality ->
+                runCatching {
+                    CamcorderProfile.getAll(cameraId, quality)
+                }.getOrNull()
+                    ?.videoProfiles
+                    ?.filter { profile -> profile.matchesDimensions(width, height) }
+                    ?.flatMap { profile ->
+                        candidateFrameRates.filter { fps -> profile.frameRate >= fps }
+                    }
+                    .orEmpty()
+            }
+                .distinct()
+                .sorted()
+        }
+
+    private fun CameraInfo.officialHighSpeedFrameRateOptionsByResolution(
+        resolutionOptions: List<String>,
+    ): Map<String, List<Int>> {
+        val highSpeedCapabilities = runCatching {
+            Recorder.getHighSpeedVideoCapabilities(this)
+        }.onFailure { error ->
+            Log.w(FPS_CHECK_TAG, "Failed to query CameraX official high-speed capabilities.", error)
+        }.getOrNull() ?: return emptyMap()
+        val supportedQualities = runCatching {
+            highSpeedCapabilities.getSupportedQualities(DynamicRange.SDR)
+        }.onFailure { error ->
+            Log.w(FPS_CHECK_TAG, "Failed to query CameraX official high-speed qualities.", error)
+        }.getOrDefault(emptyList())
+        return resolutionOptions.associateWith { resolution ->
+            val quality = resolution.toQuality()
+                ?: return@associateWith emptyList()
+            if (quality !in supportedQualities) {
+                return@associateWith emptyList()
+            }
+            val recorder = Recorder.Builder()
+                .setQualitySelector(QualitySelector.from(quality))
+                .build()
+            val capture = VideoCapture.withOutput(recorder)
+            val sessionConfig = HighSpeedVideoSessionConfig(capture)
+            runCatching {
+                getSupportedFrameRateRanges(sessionConfig)
+                    .filter { range -> range.lower == range.upper }
+                    .map { range -> range.upper }
+                    .filter { fps -> fps in candidateFrameRates }
+                    .distinct()
+                    .sorted()
+            }.onFailure { error ->
+                Log.w(
+                    FPS_CHECK_TAG,
+                    "Failed to query CameraX official high-speed fps for $resolution.",
+                    error,
+                )
+            }.getOrDefault(emptyList())
+        }
+    }
+
+    private fun StreamConfigurationMap?.highSpeedFrameRateOptionsByResolution(
+        resolutionOptions: List<String>,
+    ): Map<String, List<Int>> =
+        resolutionOptions.associateWith { resolution ->
+            val (width, height) = resolution.toTargetSize() ?: return@associateWith emptyList()
+            val size = Size(width, height)
+            val ranges = this?.let { streamMap ->
+                runCatching {
+                    streamMap.getHighSpeedVideoFpsRangesFor(size).toList()
+                }.getOrDefault(emptyList())
+            }.orEmpty()
+            candidateFrameRates
+                .filter { fps -> ranges.supportsCaptureFps(fps) }
+                .distinct()
+                .sorted()
+        }
+
+    private fun CameraCharacteristics.samsungEffectAeFrameRateRanges(): List<Range<Int>> {
+        val key = CameraCharacteristics.Key(
+            "samsung.android.control.effectAeAvailableTargetFpsRanges",
+            IntArray::class.java,
+        )
+        val values = runCatching { get(key) }.getOrNull() ?: return emptyList()
+        return values
+            .toList()
+            .chunked(2)
+            .mapNotNull { range ->
+                if (range.size != 2) {
+                    null
+                } else {
+                    Range(
+                        range[0].coerceAtMost(range[1]),
+                        range[0].coerceAtLeast(range[1]),
+                    )
+                }
+            }
+    }
+
+    private fun List<Range<Int>>.samsungFrameRateOptionsByResolution(
+        resolutionOptions: List<String>,
+    ): Map<String, List<Int>> {
+        if (isEmpty()) {
+            return emptyMap()
+        }
+        return resolutionOptions.associateWith { resolution ->
+            if (resolution == "4K") {
+                emptyList()
+            } else {
+                candidateFrameRates
+                    .filter { fps -> supportsFps(fps) }
+                    .distinct()
+                    .sorted()
+            }
+        }
+    }
+
+    private fun String.toTargetSize(): Pair<Int, Int>? = when (this) {
+        "720p" -> 1280 to 720
+        "1080p" -> 1920 to 1080
+        "4K" -> 3840 to 2160
+        else -> null
+    }
+
+    private fun String.toQuality(): Quality? = when (this) {
+        "720p" -> Quality.HD
+        "1080p" -> Quality.FHD
+        "4K" -> Quality.UHD
+        else -> null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun String.profileQualities(): List<Int> = when (this) {
+        "720p" -> listOf(
+            CamcorderProfile.QUALITY_720P,
+            CamcorderProfile.QUALITY_HIGH_SPEED_720P,
+        )
+        "1080p" -> listOf(
+            CamcorderProfile.QUALITY_1080P,
+            CamcorderProfile.QUALITY_HIGH_SPEED_1080P,
+        )
+        "4K" -> listOf(
+            CamcorderProfile.QUALITY_2160P,
+            CamcorderProfile.QUALITY_HIGH_SPEED_2160P,
+        )
+        else -> emptyList()
+    }
+
+    private fun EncoderProfiles.VideoProfile.matchesDimensions(width: Int, height: Int): Boolean =
+        (this.width == width && this.height == height) ||
+            (this.width == height && this.height == width)
+
+    private fun Size.matchesDimensions(width: Int, height: Int): Boolean =
+        (this.width == width && this.height == height) ||
+            (this.width == height && this.height == width)
+
+    private fun Long.toMaxFps(): Int =
+        (NANOS_PER_SECOND.toDouble() / this.toDouble()).roundToInt()
+
+    private fun List<Range<Int>>.supportsFps(fps: Int): Boolean =
+        any { range -> range.lower <= fps && range.upper >= fps }
+
+    private fun List<Range<Int>>.supportsCaptureFps(fps: Int): Boolean =
+        any { range -> range.lower <= fps && range.upper == fps }
+
+    private fun List<Range<Int>>.rangeLabels(): List<String> =
+        map { "${it.lower}-${it.upper}" }
+
+    private fun List<Size>.sizeLabels(): List<String> =
+        map { "${it.width}x${it.height}" }
+
     private fun List<String>?.orDefaultResolutions(): List<String> =
         this?.takeIf { it.isNotEmpty() } ?: listOf("720p", "1080p")
 
     private fun List<Int>?.orDefaultFrameRates(): List<Int> =
         this?.takeIf { it.isNotEmpty() } ?: listOf(30)
+
+    private fun Map<String, List<Int>>?.orDefaultFrameRatesByResolution(
+        resolutionOptions: List<String>,
+    ): Map<String, List<Int>> =
+        this?.takeIf { it.isNotEmpty() }
+            ?: resolutionOptions.associateWith { listOf(30) }
 
     private fun List<DynamicRangeOption>?.orDefaultDynamicRanges(): List<DynamicRangeOption> =
         this?.takeIf { it.isNotEmpty() } ?: listOf(DynamicRangeOption("sdr", "SDR"))
@@ -573,6 +907,11 @@ class CameraCapabilitiesRepository(
 
     private companion object {
         const val HDR_CHECK_TAG = "HDR_CHECK"
+        const val FPS_CHECK_TAG = "FPS_CHECK"
+        const val NANOS_PER_SECOND = 1_000_000_000L
+        const val MAX_REGULAR_FRAME_RATE = 30
+
+        val candidateFrameRates = listOf(24, 30, 60)
 
         val cameraXDynamicRangeCandidates = setOf(
             DynamicRange.SDR,

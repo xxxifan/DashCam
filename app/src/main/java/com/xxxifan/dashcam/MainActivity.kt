@@ -123,6 +123,7 @@ import com.xxxifan.dashcam.camera.PreviewController
 import com.xxxifan.dashcam.camera.codecLabel
 import com.xxxifan.dashcam.camera.coerceToSupportedCombination
 import com.xxxifan.dashcam.camera.dynamicRangeLabel
+import com.xxxifan.dashcam.camera.frameRateOptionsForResolution
 import com.xxxifan.dashcam.camera.isHdrDynamicRange
 import com.xxxifan.dashcam.camera.isRecordingCombinationSupported
 import com.xxxifan.dashcam.camera.toLogFields
@@ -1015,12 +1016,16 @@ private fun SettingsScreen(
                 Spacer(Modifier.height(8.dp))
                 Text("帧率")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val availableFrameRates = capabilities
+                        .frameRateOptionsForResolution(qualitySettings.resolution)
+                        .toSet()
                     capabilities.frameRateOptions.forEach { option ->
                         FilterChip(
-                            enabled = qualityOptionEnabled(
-                                update = { it.copy(frameRate = option) },
-                                isKept = { it.frameRate == option },
-                            ),
+                            enabled = option in availableFrameRates &&
+                                qualityOptionEnabled(
+                                    update = { it.copy(frameRate = option) },
+                                    isKept = { it.frameRate == option },
+                                ),
                             selected = qualitySettings.frameRate == option,
                             onClick = { onManualQualityChange { it.copy(frameRate = option) } },
                             label = { Text("${option}fps") },
@@ -2232,9 +2237,10 @@ private fun RecordingSettings.coerceToCapabilities(capabilities: CameraCapabilit
         ?: capabilities.resolutionOptions.firstOrNull { it == "1080p" }
         ?: capabilities.resolutionOptions.firstOrNull()
         ?: "720p"
-    val frameRate = frameRate.takeIf { it in capabilities.frameRateOptions }
-        ?: capabilities.frameRateOptions.firstOrNull { it == 30 }
-        ?: capabilities.frameRateOptions.firstOrNull()
+    val frameRatesForResolution = capabilities.frameRateOptionsForResolution(resolution)
+    val frameRate = frameRate.takeIf { it in frameRatesForResolution }
+        ?: frameRatesForResolution.firstOrNull { it == 30 }
+        ?: frameRatesForResolution.firstOrNull()
         ?: 30
     val codec = codec.takeIf { saved -> capabilities.codecOptions.any { it.id == saved } }
         ?: capabilities.codecOptions.firstOrNull { it.id == "h265" }?.id

@@ -1,6 +1,7 @@
 package com.xxxifan.dashcam.recording
 
 import com.xxxifan.dashcam.camera.CameraCapabilities
+import com.xxxifan.dashcam.camera.frameRateOptionsForResolution
 import com.xxxifan.dashcam.camera.isRecordingCombinationSupported
 import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.RecordingSettings
@@ -13,7 +14,6 @@ object RecordingStartupFallbackPolicy {
         capabilities: CameraCapabilities,
     ): List<RecordingSettings> {
         val resolutions = fallbackResolutions(requested, capabilities)
-        val frameRates = fallbackFrameRates(requested, capabilities)
         val dynamicRanges = fallbackDynamicRanges(requested, capabilities)
         val stabilizationModes = fallbackStabilizationModes(requested, capabilities)
         val codecs = fallbackCodecs(requested, capabilities)
@@ -21,6 +21,11 @@ object RecordingStartupFallbackPolicy {
 
         return buildList {
             resolutions.forEach { resolution ->
+                val frameRates = fallbackFrameRates(
+                    requested = requested,
+                    capabilities = capabilities,
+                    resolution = resolution,
+                )
                 frameRates.forEach { frameRate ->
                     dynamicRanges.forEach { dynamicRange ->
                         stabilizationModes.forEach { stabilizationMode ->
@@ -80,8 +85,9 @@ object RecordingStartupFallbackPolicy {
     private fun fallbackFrameRates(
         requested: RecordingSettings,
         capabilities: CameraCapabilities,
+        resolution: String,
     ): List<Int> {
-        val supported = capabilities.frameRateOptions
+        val supported = capabilities.frameRateOptionsForResolution(resolution)
         val stableLowerFrameRate = when {
             requested.frameRate > 30 && 30 in supported -> 30
             requested.frameRate > 30 -> supported.filter { it < requested.frameRate }.maxOrNull()
