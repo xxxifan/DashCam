@@ -10,12 +10,15 @@ import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.media.MediaFormat
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.Settings
+import android.view.SurfaceView
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -120,6 +123,7 @@ import com.xxxifan.dashcam.camera.PreviewController
 import com.xxxifan.dashcam.camera.codecLabel
 import com.xxxifan.dashcam.camera.coerceToSupportedCombination
 import com.xxxifan.dashcam.camera.dynamicRangeLabel
+import com.xxxifan.dashcam.camera.isHdrDynamicRange
 import com.xxxifan.dashcam.camera.isRecordingCombinationSupported
 import com.xxxifan.dashcam.camera.toLogFields
 import com.xxxifan.dashcam.data.AppGuidanceStore
@@ -244,6 +248,9 @@ private fun DashCamApp(
         var showConfirm by remember { mutableStateOf(false) }
         var showBatteryOptimizationPrompt by remember { mutableStateOf(false) }
         val shouldShowConfirmAfterPermission = consumePermissionResult()
+        val hdrWindowEnabled = playbackEntry == null &&
+            selectedTab == 0 &&
+            settings.dynamicRange.isHdrDynamicRange()
         val exportRecording: (RecordingEntry) -> Unit = { entry ->
             appScope.launch {
                 val result = context.exportRecordingToMediaStore(entry)
@@ -276,13 +283,17 @@ private fun DashCamApp(
             }
         }
 
-        DisposableEffect(activity) {
+        DisposableEffect(activity, hdrWindowEnabled) {
             val window = activity?.window
             val previousColorMode = window?.colorMode
-            window?.colorMode = ActivityInfo.COLOR_MODE_HDR
+            val previousHdrHeadroom = window?.desiredHdrHeadroom
+            window?.applyHdrWindowMode(hdrWindowEnabled)
             onDispose {
                 if (previousColorMode != null) {
                     window.colorMode = previousColorMode
+                }
+                if (previousHdrHeadroom != null) {
+                    window.desiredHdrHeadroom = previousHdrHeadroom
                 }
             }
         }
@@ -778,7 +789,10 @@ private fun CameraPreviewCard(
         }
         LaunchedEffect(previewView, settings) {
             previewView?.let {
+                it.implementationMode = settings.previewImplementationMode()
+                it.applyHdrHeadroom(settings.dynamicRange.isHdrDynamicRange())
                 PreviewController.bind(context, lifecycleOwner, it, settings)
+                it.applyHdrHeadroomAfterLayout(settings.dynamicRange.isHdrDynamicRange())
             }
         }
         DisposableEffect(Unit) {
@@ -796,12 +810,50 @@ private fun CameraPreviewCard(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT,
                     )
-                    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                    implementationMode = settings.previewImplementationMode()
+                    applyHdrHeadroom(settings.dynamicRange.isHdrDynamicRange())
                     previewView = this
                 }
             },
+            update = {
+                it.implementationMode = settings.previewImplementationMode()
+                it.applyHdrHeadroomAfterLayout(settings.dynamicRange.isHdrDynamicRange())
+            },
         )
     }
+}
+
+private fun RecordingSettings.previewImplementationMode(): PreviewView.ImplementationMode =
+    if (dynamicRange.isHdrDynamicRange()) {
+        PreviewView.ImplementationMode.PERFORMANCE
+    } else {
+        PreviewView.ImplementationMode.COMPATIBLE
+    }
+
+private fun android.view.Window.applyHdrWindowMode(enabled: Boolean) {
+    colorMode = if (enabled) {
+        ActivityInfo.COLOR_MODE_HDR
+    } else {
+        ActivityInfo.COLOR_MODE_DEFAULT
+    }
+    desiredHdrHeadroom = if (enabled) HDR_HEADROOM_RATIO else 0f
+}
+
+private fun View.applyHdrHeadroom(enabled: Boolean) {
+    if (this is SurfaceView) {
+        setDesiredHdrHeadroom(if (enabled) HDR_HEADROOM_RATIO else 0f)
+        return
+    }
+    if (this is ViewGroup) {
+        repeat(childCount) { index ->
+            getChildAt(index).applyHdrHeadroom(enabled)
+        }
+    }
+}
+
+private fun View.applyHdrHeadroomAfterLayout(enabled: Boolean) {
+    applyHdrHeadroom(enabled)
+    post { applyHdrHeadroom(enabled) }
 }
 
 @Composable
@@ -1566,6 +1618,7 @@ private fun VideoPlaybackScreen(
     }
     var currentEntry by remember(entry.filePath) { mutableStateOf(entry) }
     var metadata by remember(currentEntry.filePath) { mutableStateOf<VideoMetadata?>(null) }
+    val isCurrentVideoHdr = currentEntry.dynamicRange.isHdrDynamicRange() || metadata?.isHdr == true
     var continuousPlayEnabled by remember {
         mutableStateOf(playbackPreferencesStore.isContinuousPlayEnabled())
     }
@@ -1579,6 +1632,21 @@ private fun VideoPlaybackScreen(
     }
 
     BackHandler(onBack = onDismiss)
+
+    DisposableEffect(activity, isCurrentVideoHdr) {
+        val window = activity?.window
+        val previousColorMode = window?.colorMode
+        val previousHdrHeadroom = window?.desiredHdrHeadroom
+        window?.applyHdrWindowMode(isCurrentVideoHdr)
+        onDispose {
+            if (previousColorMode != null) {
+                window.colorMode = previousColorMode
+            }
+            if (previousHdrHeadroom != null) {
+                window.desiredHdrHeadroom = previousHdrHeadroom
+            }
+        }
+    }
 
     LaunchedEffect(currentEntry.filePath) {
         metadata = withContext(Dispatchers.IO) {
@@ -1644,41 +1712,38 @@ private fun VideoPlaybackScreen(
         color = Color.Black,
         modifier = Modifier.fillMaxSize(),
     ) {
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .safeDrawingPadding(),
         ) {
+            AndroidView(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black),
+                factory = {
+                    PlayerView(it).apply {
+                        this.player = player
+                        useController = false
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                        applyHdrHeadroom(isCurrentVideoHdr)
+                    }
+                },
+                update = {
+                    it.player = player
+                    it.applyHdrHeadroomAfterLayout(isCurrentVideoHdr)
+                },
+            )
             VideoPlaybackTopBar(
                 entry = currentEntry,
                 onDismiss = onDismiss,
                 onShare = { onShare(currentEntry) },
                 onExport = { onExport(currentEntry) },
+                modifier = Modifier.align(Alignment.TopCenter),
             )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .background(Color.Black),
-                contentAlignment = Alignment.Center,
-            ) {
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = {
-                        PlayerView(it).apply {
-                            this.player = player
-                            useController = false
-                            layoutParams = ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                            )
-                        }
-                    },
-                    update = {
-                        it.player = player
-                    },
-                )
-            }
             VideoPlaybackControls(
                 isPlaying = isPlaying,
                 positionMs = positionMs,
@@ -1706,6 +1771,7 @@ private fun VideoPlaybackScreen(
                     continuousPlayEnabled = enabled
                     playbackPreferencesStore.setContinuousPlayEnabled(enabled)
                 },
+                modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
     }
@@ -1717,11 +1783,13 @@ private fun VideoPlaybackTopBar(
     onDismiss: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.42f))
             .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1788,6 +1856,7 @@ private fun VideoPlaybackControls(
     onSeek: (Long) -> Unit,
     onSpeedChange: (Float) -> Unit,
     onContinuousPlayChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var pendingSeekMs by remember { mutableStateOf<Long?>(null) }
     var showSpeedMenu by remember { mutableStateOf(false) }
@@ -1796,8 +1865,9 @@ private fun VideoPlaybackControls(
     val bufferedPercent = ((bufferedPositionMs.coerceIn(0L, safeDurationMs) * 100L) / safeDurationMs)
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.42f))
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Slider(
@@ -2098,6 +2168,8 @@ private data class VideoMetadata(
     val width: Int,
     val height: Int,
     val rotation: Int,
+    val colorTransfer: Int?,
+    val colorStandard: Int?,
 ) {
     val isLandscape: Boolean
         get() {
@@ -2106,6 +2178,11 @@ private data class VideoMetadata(
             val displayHeight = if (rotated) width else height
             return displayWidth > displayHeight
         }
+
+    val isHdr: Boolean
+        get() = colorTransfer == MediaFormat.COLOR_TRANSFER_HLG ||
+            colorTransfer == MediaFormat.COLOR_TRANSFER_ST2084 ||
+            colorStandard == MediaFormat.COLOR_STANDARD_BT2020
 }
 
 private fun File.readVideoMetadata(): VideoMetadata? {
@@ -2124,7 +2201,19 @@ private fun File.readVideoMetadata(): VideoMetadata? {
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
                 ?.toIntOrNull()
                 ?: 0
-            VideoMetadata(width = width, height = height, rotation = rotation)
+            val colorTransfer = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_COLOR_TRANSFER)
+                ?.toIntOrNull()
+            val colorStandard = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_COLOR_STANDARD)
+                ?.toIntOrNull()
+            VideoMetadata(
+                width = width,
+                height = height,
+                rotation = rotation,
+                colorTransfer = colorTransfer,
+                colorStandard = colorStandard,
+            )
         }
     }.getOrNull()
 }
@@ -2285,3 +2374,4 @@ private fun RecordingDowngradeReason.label(): String = when (this) {
 }
 
 private const val RECORDING_STORAGE_ESTIMATE_REFRESH_MILLIS = 15_000L
+private const val HDR_HEADROOM_RATIO = 2f
