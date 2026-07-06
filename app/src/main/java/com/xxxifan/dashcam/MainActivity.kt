@@ -121,6 +121,7 @@ import com.xxxifan.dashcam.camera.codecLabel
 import com.xxxifan.dashcam.camera.coerceToSupportedCombination
 import com.xxxifan.dashcam.camera.dynamicRangeLabel
 import com.xxxifan.dashcam.camera.isRecordingCombinationSupported
+import com.xxxifan.dashcam.camera.toLogFields
 import com.xxxifan.dashcam.data.AppGuidanceStore
 import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.PlaybackPreferencesStore
@@ -299,7 +300,12 @@ private fun DashCamApp(
             val cameraInfo = runCatching {
                 provider.getCameraInfo(CameraSelector.DEFAULT_BACK_CAMERA)
             }.getOrNull()
-            cameraCapabilities = cameraCapabilitiesRepository.capabilities(cameraInfo)
+            cameraCapabilities = cameraCapabilitiesRepository.capabilities(cameraInfo).also { capabilities ->
+                eventLogger.log(
+                    event = "camera_hdr_diagnostics",
+                    fields = capabilities.hdrDiagnostics.toLogFields() + mapOf("source" to "main_activity"),
+                )
+            }
         }
 
         LaunchedEffect(Unit) {

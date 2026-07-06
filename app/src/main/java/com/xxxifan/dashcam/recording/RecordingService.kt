@@ -44,6 +44,7 @@ import com.xxxifan.dashcam.camera.codecLabel
 import com.xxxifan.dashcam.camera.coerceToSupportedCombination
 import com.xxxifan.dashcam.camera.isHdrDynamicRange
 import com.xxxifan.dashcam.camera.toCameraXDynamicRange
+import com.xxxifan.dashcam.camera.toLogFields
 import com.xxxifan.dashcam.camera.toVideoMimeType
 import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.RecordingAlertStore
@@ -202,6 +203,10 @@ class RecordingService : LifecycleService() {
         val capabilities = CameraCapabilitiesRepository(this)
             .capabilities(provider.cameraInfoFor(requestedSettings))
         sessionCapabilities = capabilities
+        eventLogger.log(
+            event = "camera_hdr_diagnostics",
+            fields = capabilities.hdrDiagnostics.toLogFields() + mapOf("source" to "recording_service"),
+        )
         val supportedRequestedSettings = requestedSettings.coerceToCapabilities(capabilities)
         val resolvedSettings = RecordingQualityResolver.resolveAutoQuality(
             context = this,

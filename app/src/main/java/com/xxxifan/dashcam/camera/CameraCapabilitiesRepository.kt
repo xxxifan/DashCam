@@ -1,12 +1,15 @@
 package com.xxxifan.dashcam.camera
 
 import android.content.Context
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraExtensionCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.params.DynamicRangeProfiles
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.util.Log
 import android.util.Size
 import androidx.camera.core.CameraInfo
 import androidx.camera.core.DynamicRange
@@ -29,11 +32,12 @@ class CameraCapabilitiesRepository(
         val resolutionOptions = characteristics?.resolutionOptions().orDefaultResolutions()
         val frameRateOptions = characteristics?.frameRateOptions().orDefaultFrameRates()
         val codecOptions = codecOptions()
-        val camera2DynamicRangeOptions = characteristics?.dynamicRangeOptions().orDefaultDynamicRanges()
-        val dynamicRangeOptions = (
-            cameraInfo?.cameraXRecordingDynamicRangeOptions(camera2DynamicRangeOptions)
-                ?: camera2DynamicRangeOptions
-            ).orDefaultDynamicRanges()
+        val camera2DynamicRangeOptions = characteristics?.camera2DynamicRangeOptions().orDefaultDynamicRanges()
+        val cameraXProbe = cameraInfo?.cameraXRecordingDynamicRangeProbe()
+        val dynamicRangeOptions = recordingDynamicRangeOptions(
+            camera2Options = camera2DynamicRangeOptions,
+            cameraXProbe = cameraXProbe,
+        )
         val stabilizationModes = characteristics?.stabilizationModes().orDefaultStabilizationModes()
         val combinations = recordingCombinations(
             cameraInfo = cameraInfo,
@@ -43,6 +47,12 @@ class CameraCapabilitiesRepository(
             dynamicRangeOptions = dynamicRangeOptions,
             stabilizationModes = stabilizationModes,
         )
+        val hdrDiagnostics = characteristics?.hdrDiagnostics(
+            cameraId = logicalBackCamera.orEmpty(),
+            cameraXProbe = cameraXProbe,
+            hdrExtensionDiagnostics = manager.hdrExtensionDiagnostics(logicalBackCamera),
+        ) ?: CameraHdrDiagnostics()
+        logHdrDiagnostics(hdrDiagnostics)
 
         return CameraCapabilities(
             cameraOptions = cameraOptions,
@@ -52,6 +62,7 @@ class CameraCapabilitiesRepository(
             dynamicRangeOptions = dynamicRangeOptions,
             stabilizationModes = stabilizationModes,
             supportedRecordingCombinations = combinations,
+            hdrDiagnostics = hdrDiagnostics,
         )
     }
 
@@ -182,40 +193,28 @@ class CameraCapabilitiesRepository(
         }
     }
 
-    private fun CameraCharacteristics.dynamicRangeOptions(): List<DynamicRangeOption> {
+    private fun CameraCharacteristics.camera2DynamicRangeOptions(): List<DynamicRangeOption> {
         val profiles = get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES)
             ?.getSupportedProfiles()
             .orEmpty()
-        val recommendedProfile = get(CameraCharacteristics.REQUEST_RECOMMENDED_TEN_BIT_DYNAMIC_RANGE_PROFILE)
-        val hasTenBitDynamicRange = capabilities()
-            .contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_DYNAMIC_RANGE_TEN_BIT)
         return buildList {
             add(DynamicRangeOption("sdr", "SDR"))
-            if (
-                profiles.contains(DynamicRangeProfiles.HLG10) ||
-                recommendedProfile == DynamicRangeProfiles.HLG10 ||
-                (hasTenBitDynamicRange && profiles.isEmpty())
-            ) {
+            if (profiles.contains(DynamicRangeProfiles.HLG10)) {
                 add(DynamicRangeOption("hlg10", "HLG10 HDR"))
             }
-            if (profiles.contains(DynamicRangeProfiles.HDR10) || recommendedProfile == DynamicRangeProfiles.HDR10) {
+            if (profiles.contains(DynamicRangeProfiles.HDR10)) {
                 add(DynamicRangeOption("hdr10", "HDR10"))
             }
-            if (
-                profiles.contains(DynamicRangeProfiles.HDR10_PLUS) ||
-                recommendedProfile == DynamicRangeProfiles.HDR10_PLUS
-            ) {
+            if (profiles.contains(DynamicRangeProfiles.HDR10_PLUS)) {
                 add(DynamicRangeOption("hdr10_plus", "HDR10+"))
             }
-            if (profiles.any { it in dolbyVisionProfiles }) {
+            if (profiles.any { it in tenBitDolbyVisionProfiles }) {
                 add(DynamicRangeOption("dolby_vision", "Dolby Vision"))
             }
         }.distinctBy { it.id }
     }
 
-    private fun CameraInfo.cameraXRecordingDynamicRangeOptions(
-        camera2Options: List<DynamicRangeOption>,
-    ): List<DynamicRangeOption> {
+    private fun CameraInfo.cameraXRecordingDynamicRangeProbe(): CameraXDynamicRangeProbe {
         val recorderRanges: Set<DynamicRange> = runCatching {
             Recorder.getVideoCapabilities(this).supportedDynamicRanges
         }.getOrDefault(emptySet())
@@ -228,11 +227,31 @@ class CameraCapabilitiesRepository(
             recorderRanges.isNotEmpty() -> recorderRanges
             else -> queriedRanges
         }
-        return if (cameraXRanges.isNotEmpty()) {
-            cameraXRanges.toDynamicRangeOptions()
+        return CameraXDynamicRangeProbe(
+            recorderRanges = recorderRanges,
+            queriedRanges = queriedRanges,
+            resolvedRanges = cameraXRanges,
+        )
+    }
+
+    private fun recordingDynamicRangeOptions(
+        camera2Options: List<DynamicRangeOption>,
+        cameraXProbe: CameraXDynamicRangeProbe?,
+    ): List<DynamicRangeOption> {
+        val cameraXOptions = cameraXProbe
+            ?.resolvedRanges
+            ?.takeIf { it.isNotEmpty() }
+            ?.toDynamicRangeOptions(allowDefault = false)
+        val confirmedIds = if (cameraXOptions != null) {
+            camera2Options.map { it.id }.toSet().intersect(cameraXOptions.map { it.id }.toSet())
         } else {
             camera2Options
+                .map { it.id }
+                .toSet()
         }
+        return camera2Options
+            .filter { it.id == "sdr" || it.id in confirmedIds }
+            .orDefaultDynamicRanges()
     }
 
     private fun recordingCombinations(
@@ -307,9 +326,11 @@ class CameraCapabilitiesRepository(
         else -> null
     }
 
-    private fun Set<DynamicRange>.toDynamicRangeOptions(): List<DynamicRangeOption> {
+    private fun Set<DynamicRange>.toDynamicRangeOptions(
+        allowDefault: Boolean = true,
+    ): List<DynamicRangeOption> {
         val ranges = this
-        return buildList {
+        val options = buildList {
             if (DynamicRange.SDR in ranges) {
                 add(DynamicRangeOption("sdr", "SDR"))
             }
@@ -325,9 +346,123 @@ class CameraCapabilitiesRepository(
             if (DynamicRange.DOLBY_VISION_10_BIT in ranges) {
                 add(DynamicRangeOption("dolby_vision", "Dolby Vision"))
             }
-        }.ifEmpty {
-            listOf(DynamicRangeOption("sdr", "SDR"))
         }
+        return if (options.isEmpty() && allowDefault) {
+            listOf(DynamicRangeOption("sdr", "SDR"))
+        } else {
+            options
+        }
+    }
+
+    private fun CameraCharacteristics.hdrDiagnostics(
+        cameraId: String,
+        cameraXProbe: CameraXDynamicRangeProbe?,
+        hdrExtensionDiagnostics: HdrExtensionDiagnostics,
+    ): CameraHdrDiagnostics {
+        val profiles = get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES)
+        val supportedProfiles = profiles?.supportedProfiles.orEmpty()
+        val tenBitProfiles = supportedProfiles.filter { it.isTenBitDynamicRangeProfile() }
+        val recommendedProfile = get(CameraCharacteristics.REQUEST_RECOMMENDED_TEN_BIT_DYNAMIC_RANGE_PROFILE)
+        return CameraHdrDiagnostics(
+            cameraId = cameraId,
+            hasTenBitDynamicRangeCapability = capabilities()
+                .contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_DYNAMIC_RANGE_TEN_BIT),
+            camera2SupportedProfiles = supportedProfiles.map { it.dynamicRangeProfileName() },
+            camera2TenBitProfiles = tenBitProfiles.map { it.dynamicRangeProfileName() },
+            camera2RecommendedProfile = recommendedProfile?.dynamicRangeProfileName(),
+            cameraXRecorderDynamicRanges = cameraXProbe?.recorderRanges
+                ?.map { it.dynamicRangeName() }
+                .orEmpty(),
+            cameraXQueriedDynamicRanges = cameraXProbe?.queriedRanges
+                ?.map { it.dynamicRangeName() }
+                .orEmpty(),
+            cameraXResolvedDynamicRanges = cameraXProbe?.resolvedRanges
+                ?.map { it.dynamicRangeName() }
+                .orEmpty(),
+            hdrExtensionDiagnostics = hdrExtensionDiagnostics,
+        )
+    }
+
+    private fun CameraManager.hdrExtensionDiagnostics(cameraId: String): HdrExtensionDiagnostics {
+        return runCatching {
+            val characteristics = getCameraExtensionCharacteristics(cameraId)
+            val supportedExtensions = characteristics.supportedExtensions
+            val hdrExtensionSupported =
+                CameraExtensionCharacteristics.EXTENSION_HDR in supportedExtensions
+            if (!hdrExtensionSupported) {
+                return HdrExtensionDiagnostics(
+                    cameraId = cameraId,
+                    supportedExtensions = supportedExtensions.map { it.extensionName() },
+                    hdrExtensionSupported = false,
+                )
+            }
+            val extensionProfiles = runCatching {
+                characteristics.get(
+                    CameraExtensionCharacteristics.EXTENSION_HDR,
+                    CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES,
+                )?.supportedProfiles.orEmpty()
+            }.getOrDefault(emptySet())
+            val extensionRecommendedProfile = runCatching {
+                characteristics.get(
+                    CameraExtensionCharacteristics.EXTENSION_HDR,
+                    CameraCharacteristics.REQUEST_RECOMMENDED_TEN_BIT_DYNAMIC_RANGE_PROFILE,
+                )
+            }.getOrNull()
+            val previewSizes = runCatching {
+                characteristics.getExtensionSupportedSizes(
+                    CameraExtensionCharacteristics.EXTENSION_HDR,
+                    SurfaceTexture::class.java,
+                )
+            }.getOrDefault(emptyList())
+            val captureRequestKeys = runCatching {
+                characteristics.getAvailableCaptureRequestKeys(CameraExtensionCharacteristics.EXTENSION_HDR)
+            }.getOrDefault(emptySet())
+            HdrExtensionDiagnostics(
+                cameraId = cameraId,
+                supportedExtensions = supportedExtensions.map { it.extensionName() },
+                hdrExtensionSupported = true,
+                hdrExtensionDynamicRangeProfiles = extensionProfiles
+                    .filter { it.isTenBitDynamicRangeProfile() }
+                    .map { it.dynamicRangeProfileName() },
+                hdrExtensionRecommendedProfile = extensionRecommendedProfile?.dynamicRangeProfileName(),
+                hdrExtensionPreviewSizes = previewSizes.map { "${it.width}x${it.height}" },
+                hdrExtensionCaptureRequestKeys = captureRequestKeys.map { it.name }.sorted(),
+            )
+        }.getOrElse { error ->
+            HdrExtensionDiagnostics(
+                cameraId = cameraId,
+                error = error.message ?: error::class.java.simpleName,
+            )
+        }
+    }
+
+    private fun logHdrDiagnostics(diagnostics: CameraHdrDiagnostics) {
+        if (diagnostics.cameraId.isBlank()) {
+            return
+        }
+        Log.d(
+            HDR_CHECK_TAG,
+            "camera=${diagnostics.cameraId}, 10bitCapability=${diagnostics.hasTenBitDynamicRangeCapability}",
+        )
+        Log.d(
+            HDR_CHECK_TAG,
+            "Camera2 profiles=${diagnostics.camera2SupportedProfiles}, " +
+                "10bitProfiles=${diagnostics.camera2TenBitProfiles}, " +
+                "recommended=${diagnostics.camera2RecommendedProfile}",
+        )
+        Log.d(
+            HDR_CHECK_TAG,
+            "CameraX recorder=${diagnostics.cameraXRecorderDynamicRanges}, " +
+                "queried=${diagnostics.cameraXQueriedDynamicRanges}, " +
+                "resolved=${diagnostics.cameraXResolvedDynamicRanges}",
+        )
+        Log.d(
+            HDR_CHECK_TAG,
+            "HDR extension supported=${diagnostics.hdrExtensionDiagnostics.hdrExtensionSupported}, " +
+                "profiles=${diagnostics.hdrExtensionDiagnostics.hdrExtensionDynamicRangeProfiles}, " +
+                "previewSizes=${diagnostics.hdrExtensionDiagnostics.hdrExtensionPreviewSizes}, " +
+                "error=${diagnostics.hdrExtensionDiagnostics.error}",
+        )
     }
 
     private fun CameraCharacteristics.stabilizationModes(): List<StabilizationMode> {
@@ -387,7 +522,58 @@ class CameraCapabilitiesRepository(
         ),
     )
 
+    private fun Long.dynamicRangeProfileName(): String = when (this) {
+        DynamicRangeProfiles.STANDARD -> "STANDARD"
+        DynamicRangeProfiles.HLG10 -> "HLG10"
+        DynamicRangeProfiles.HDR10 -> "HDR10"
+        DynamicRangeProfiles.HDR10_PLUS -> "HDR10_PLUS"
+        DynamicRangeProfiles.DOLBY_VISION_10B_HDR_REF -> "DOLBY_VISION_10B_HDR_REF"
+        DynamicRangeProfiles.DOLBY_VISION_10B_HDR_REF_PO -> "DOLBY_VISION_10B_HDR_REF_PO"
+        DynamicRangeProfiles.DOLBY_VISION_10B_HDR_OEM -> "DOLBY_VISION_10B_HDR_OEM"
+        DynamicRangeProfiles.DOLBY_VISION_10B_HDR_OEM_PO -> "DOLBY_VISION_10B_HDR_OEM_PO"
+        DynamicRangeProfiles.DOLBY_VISION_8B_HDR_REF -> "DOLBY_VISION_8B_HDR_REF"
+        DynamicRangeProfiles.DOLBY_VISION_8B_HDR_REF_PO -> "DOLBY_VISION_8B_HDR_REF_PO"
+        DynamicRangeProfiles.DOLBY_VISION_8B_HDR_OEM -> "DOLBY_VISION_8B_HDR_OEM"
+        DynamicRangeProfiles.DOLBY_VISION_8B_HDR_OEM_PO -> "DOLBY_VISION_8B_HDR_OEM_PO"
+        else -> "UNKNOWN_$this"
+    }
+
+    private fun Long.isTenBitDynamicRangeProfile(): Boolean =
+        this == DynamicRangeProfiles.HLG10 ||
+            this == DynamicRangeProfiles.HDR10 ||
+            this == DynamicRangeProfiles.HDR10_PLUS ||
+            this in tenBitDolbyVisionProfiles
+
+    private fun DynamicRange.dynamicRangeName(): String = when (this) {
+        DynamicRange.SDR -> "SDR"
+        DynamicRange.HLG_10_BIT -> "HLG10"
+        DynamicRange.HDR10_10_BIT -> "HDR10"
+        DynamicRange.HDR10_PLUS_10_BIT -> "HDR10_PLUS"
+        DynamicRange.DOLBY_VISION_10_BIT -> "DOLBY_VISION_10_BIT"
+        DynamicRange.DOLBY_VISION_8_BIT -> "DOLBY_VISION_8_BIT"
+        DynamicRange.HDR_UNSPECIFIED_10_BIT -> "HDR_UNSPECIFIED_10_BIT"
+        DynamicRange.UNSPECIFIED -> "UNSPECIFIED"
+        else -> toString()
+    }
+
+    private fun Int.extensionName(): String = when (this) {
+        CameraExtensionCharacteristics.EXTENSION_AUTOMATIC -> "AUTOMATIC"
+        CameraExtensionCharacteristics.EXTENSION_BOKEH -> "BOKEH"
+        CameraExtensionCharacteristics.EXTENSION_FACE_RETOUCH -> "FACE_RETOUCH"
+        CameraExtensionCharacteristics.EXTENSION_HDR -> "HDR"
+        CameraExtensionCharacteristics.EXTENSION_NIGHT -> "NIGHT"
+        else -> "VENDOR_$this"
+    }
+
+    private data class CameraXDynamicRangeProbe(
+        val recorderRanges: Set<DynamicRange>,
+        val queriedRanges: Set<DynamicRange>,
+        val resolvedRanges: Set<DynamicRange>,
+    )
+
     private companion object {
+        const val HDR_CHECK_TAG = "HDR_CHECK"
+
         val cameraXDynamicRangeCandidates = setOf(
             DynamicRange.SDR,
             DynamicRange.HLG_10_BIT,
@@ -396,7 +582,7 @@ class CameraCapabilitiesRepository(
             DynamicRange.DOLBY_VISION_10_BIT,
         )
 
-        val dolbyVisionProfiles = setOf(
+        val tenBitDolbyVisionProfiles = setOf(
             DynamicRangeProfiles.DOLBY_VISION_10B_HDR_OEM,
             DynamicRangeProfiles.DOLBY_VISION_10B_HDR_OEM_PO,
             DynamicRangeProfiles.DOLBY_VISION_10B_HDR_REF,

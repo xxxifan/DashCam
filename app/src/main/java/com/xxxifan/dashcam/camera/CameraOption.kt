@@ -32,6 +32,52 @@ data class RecordingCombination(
     val stabilizationMode: StabilizationMode,
 )
 
+data class CameraHdrDiagnostics(
+    val cameraId: String = "",
+    val hasTenBitDynamicRangeCapability: Boolean = false,
+    val camera2SupportedProfiles: List<String> = emptyList(),
+    val camera2TenBitProfiles: List<String> = emptyList(),
+    val camera2RecommendedProfile: String? = null,
+    val cameraXRecorderDynamicRanges: List<String> = emptyList(),
+    val cameraXQueriedDynamicRanges: List<String> = emptyList(),
+    val cameraXResolvedDynamicRanges: List<String> = emptyList(),
+    val hdrExtensionDiagnostics: HdrExtensionDiagnostics = HdrExtensionDiagnostics(),
+)
+
+data class HdrExtensionDiagnostics(
+    val cameraId: String = "",
+    val supportedExtensions: List<String> = emptyList(),
+    val hdrExtensionSupported: Boolean = false,
+    val hdrExtensionDynamicRangeProfiles: List<String> = emptyList(),
+    val hdrExtensionRecommendedProfile: String? = null,
+    val hdrExtensionPreviewSizes: List<String> = emptyList(),
+    val hdrExtensionCaptureRequestKeys: List<String> = emptyList(),
+    val error: String? = null,
+)
+
+fun CameraHdrDiagnostics.toLogFields(): Map<String, Any?> = mapOf(
+    "cameraId" to cameraId,
+    "hasTenBitDynamicRangeCapability" to hasTenBitDynamicRangeCapability,
+    "camera2SupportedProfiles" to camera2SupportedProfiles,
+    "camera2TenBitProfiles" to camera2TenBitProfiles,
+    "camera2RecommendedProfile" to camera2RecommendedProfile,
+    "cameraXRecorderDynamicRanges" to cameraXRecorderDynamicRanges,
+    "cameraXQueriedDynamicRanges" to cameraXQueriedDynamicRanges,
+    "cameraXResolvedDynamicRanges" to cameraXResolvedDynamicRanges,
+    "hdrExtension" to hdrExtensionDiagnostics.toLogFields(),
+)
+
+private fun HdrExtensionDiagnostics.toLogFields(): Map<String, Any?> = mapOf(
+    "cameraId" to cameraId,
+    "supportedExtensions" to supportedExtensions,
+    "hdrExtensionSupported" to hdrExtensionSupported,
+    "hdrExtensionDynamicRangeProfiles" to hdrExtensionDynamicRangeProfiles,
+    "hdrExtensionRecommendedProfile" to hdrExtensionRecommendedProfile,
+    "hdrExtensionPreviewSizes" to hdrExtensionPreviewSizes,
+    "hdrExtensionCaptureRequestKeys" to hdrExtensionCaptureRequestKeys,
+    "error" to error,
+)
+
 data class CameraCapabilities(
     val cameraOptions: List<CameraOption>,
     val resolutionOptions: List<String>,
@@ -40,6 +86,7 @@ data class CameraCapabilities(
     val dynamicRangeOptions: List<DynamicRangeOption>,
     val stabilizationModes: List<StabilizationMode>,
     val supportedRecordingCombinations: List<RecordingCombination> = emptyList(),
+    val hdrDiagnostics: CameraHdrDiagnostics = CameraHdrDiagnostics(),
 )
 
 object CameraSelectionId {
