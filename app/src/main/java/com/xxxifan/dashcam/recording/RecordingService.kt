@@ -54,10 +54,10 @@ import com.xxxifan.dashcam.camera.frameRateOptionsForResolution
 import com.xxxifan.dashcam.camera.isHdrDynamicRange
 import com.xxxifan.dashcam.camera.isHighSpeedRequiredForResolution
 import com.xxxifan.dashcam.camera.toCameraXDynamicRange
+import com.xxxifan.dashcam.camera.applyFocusMode
 import com.xxxifan.dashcam.camera.toLogFields
 import com.xxxifan.dashcam.camera.toVideoMimeType
 import com.xxxifan.dashcam.data.BitratePreset
-import com.xxxifan.dashcam.data.FocusMode
 import com.xxxifan.dashcam.data.RecordingAlertStore
 import com.xxxifan.dashcam.data.RecordingEntry
 import com.xxxifan.dashcam.data.RecordingEventLogger
@@ -1080,14 +1080,8 @@ class RecordingService : LifecycleService() {
             CaptureRequest.CONTROL_ZOOM_RATIO,
             settings.cropZoomRatio.coerceCropZoomRatio(),
         )
-        when (settings.focusMode) {
-            FocusMode.Farthest -> {
-                extender.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
-                extender.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, 0.0f)
-            }
-            FocusMode.Auto -> {
-                extender.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-            }
+        if (applyAeFrameRate) {
+            extender.applyFocusMode(settings.focusMode)
         }
     }
 

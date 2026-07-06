@@ -1,7 +1,6 @@
 package com.xxxifan.dashcam.camera
 
 import android.content.Context
-import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.Camera2CameraInfo
@@ -12,12 +11,12 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
-import com.xxxifan.dashcam.data.FocusMode
 import com.xxxifan.dashcam.data.RecordingSettings
 import com.xxxifan.dashcam.data.coerceCropZoomRatio
 
 object PreviewController {
     private var boundPreview: Preview? = null
+    private var generation = 0
 
     fun bind(
         context: Context,
@@ -25,9 +24,11 @@ object PreviewController {
         previewView: PreviewView,
         settings: RecordingSettings,
     ) {
+        val myGeneration = ++generation
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener(
             {
+                if (generation != myGeneration) return@addListener
                 val provider = providerFuture.get()
                 val logicalCameraId = CameraSelectionId.logicalCameraId(settings.cameraId)
                 val selector = if (logicalCameraId.isNotBlank()) {
@@ -42,21 +43,15 @@ object PreviewController {
                 runCatching {
                     provider.unbindAll()
                     val preview = buildPreview(previewView, settings, usePhysicalCamera = true)
-                    provider.bindToLifecycle(
-                        lifecycleOwner,
-                        selector,
-                        preview,
-                    )
+                    provider.bindToLifecycle(lifecycleOwner, selector, preview)
                     boundPreview = preview
                 }.onFailure {
-                    provider.unbindAll()
-                    val preview = buildPreview(previewView, settings, usePhysicalCamera = false)
-                    provider.bindToLifecycle(
-                        lifecycleOwner,
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview,
-                    )
-                    boundPreview = preview
+                    runCatching {
+                        provider.unbindAll()
+                        val preview = buildPreview(previewView, settings, usePhysicalCamera = false)
+                        provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview)
+                        boundPreview = preview
+                    }
                 }
             },
             ContextCompat.getMainExecutor(context),
@@ -90,15 +85,7 @@ object PreviewController {
             CaptureRequest.CONTROL_ZOOM_RATIO,
             settings.cropZoomRatio.coerceCropZoomRatio(),
         )
-        when (settings.focusMode) {
-            FocusMode.Farthest -> {
-                extender.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
-                extender.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, 0.0f)
-            }
-            FocusMode.Auto -> {
-                extender.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-            }
-        }
+        extender.applyFocusMode(settings.focusMode)
         return builder.build().also {
             it.surfaceProvider = previewView.surfaceProvider
         }

@@ -64,10 +64,10 @@ class RecordingSettingsStore(
     }
 
     private fun decodeFocusMode(): FocusMode {
-        val name = mmkv.decodeString(KEY_FOCUS_MODE, FocusMode.Farthest.name)
+        val name = mmkv.decodeString(KEY_FOCUS_MODE, FocusMode.Auto.name)
         return runCatching {
-            FocusMode.valueOf(name ?: FocusMode.Farthest.name)
-        }.getOrDefault(FocusMode.Farthest)
+            FocusMode.valueOf(name ?: FocusMode.Auto.name)
+        }.getOrDefault(FocusMode.Auto)
     }
 
     private fun decodeAudioProcessingMode(): AudioProcessingMode {
