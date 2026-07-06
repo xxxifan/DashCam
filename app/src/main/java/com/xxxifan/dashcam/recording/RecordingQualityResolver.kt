@@ -2,6 +2,7 @@ package com.xxxifan.dashcam.recording
 
 import android.content.Context
 import com.xxxifan.dashcam.camera.CameraCapabilities
+import com.xxxifan.dashcam.camera.isRecordingCombinationSupported
 import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.RecordingSettings
 import com.xxxifan.dashcam.data.StabilizationMode
@@ -66,16 +67,18 @@ object RecordingQualityResolver {
                     }
                 }
             }
-        }.distinctBy {
-            listOf(
-                it.resolution,
-                it.frameRate.toString(),
-                it.codec,
-                it.bitratePreset.name,
-                it.dynamicRange,
-                it.stabilizationMode.name,
-            )
         }
+            .filter { capabilities.isRecordingCombinationSupported(it) }
+            .distinctBy {
+                listOf(
+                    it.resolution,
+                    it.frameRate.toString(),
+                    it.codec,
+                    it.bitratePreset.name,
+                    it.dynamicRange,
+                    it.stabilizationMode.name,
+                )
+            }
     }
 
     private fun autoCodecs(

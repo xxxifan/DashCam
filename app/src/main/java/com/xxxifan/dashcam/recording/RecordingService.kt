@@ -41,6 +41,8 @@ import com.xxxifan.dashcam.camera.CameraCapabilities
 import com.xxxifan.dashcam.camera.CameraCapabilitiesRepository
 import com.xxxifan.dashcam.camera.CameraSelectionId
 import com.xxxifan.dashcam.camera.codecLabel
+import com.xxxifan.dashcam.camera.coerceToSupportedCombination
+import com.xxxifan.dashcam.camera.isHdrDynamicRange
 import com.xxxifan.dashcam.camera.toCameraXDynamicRange
 import com.xxxifan.dashcam.camera.toVideoMimeType
 import com.xxxifan.dashcam.data.BitratePreset
@@ -85,6 +87,7 @@ class RecordingService : LifecycleService() {
     private var currentSegment: SegmentContext? = null
     private var requestedSessionSettings: RecordingSettings? = null
     private var activeSessionSettings: RecordingSettings? = null
+    private var sessionCapabilities: CameraCapabilities? = null
     private var downgradeState: RecordingDowngradeState? = null
     private var latestSafetyDecision: RecordingSafetyDecision? = null
     private var pipelineFailureCount = 0
@@ -148,6 +151,7 @@ class RecordingService : LifecycleService() {
         activeRecording = null
         requestedSessionSettings = null
         activeSessionSettings = null
+        sessionCapabilities = null
         downgradeState = null
         latestSafetyDecision = null
         val stopAlert = pendingStopAlert
@@ -194,10 +198,14 @@ class RecordingService : LifecycleService() {
             )
             return
         }
-        val capabilities = CameraCapabilitiesRepository(this).capabilities()
+        val provider = ProcessCameraProvider.getInstance(this).await()
+        val capabilities = CameraCapabilitiesRepository(this)
+            .capabilities(provider.cameraInfoFor(requestedSettings))
+        sessionCapabilities = capabilities
+        val supportedRequestedSettings = requestedSettings.coerceToCapabilities(capabilities)
         val resolvedSettings = RecordingQualityResolver.resolveAutoQuality(
             context = this,
-            requested = requestedSettings,
+            requested = supportedRequestedSettings,
             capabilities = capabilities,
         )
         val startupSettings = resolveStartupSettings(
@@ -214,7 +222,7 @@ class RecordingService : LifecycleService() {
             return
         }
         val settings = startupSettings.settings
-        requestedSessionSettings = requestedSettings
+        requestedSessionSettings = supportedRequestedSettings
         activeSessionSettings = settings
         downgradeState = startupSettings.downgradeState
         eventLogger.logRecordingSettings(
@@ -225,8 +233,6 @@ class RecordingService : LifecycleService() {
                 "downgradeReasons" to startupSettings.downgradeState?.reasons?.map { it.name },
             ),
         )
-
-        val provider = ProcessCameraProvider.getInstance(this).await()
         val recorderBuilder = Recorder.Builder()
             .setQualitySelector(
                 QualitySelector.from(
@@ -415,6 +421,7 @@ class RecordingService : LifecycleService() {
                 bitratePreset = segment.settings.bitratePreset,
                 dynamicRange = segment.settings.dynamicRange,
                 audioEnabled = segment.settings.audioEnabled,
+                audioProcessingMode = segment.settings.audioProcessingMode,
                 stabilizationMode = segment.settings.stabilizationMode,
                 cameraId = segment.settings.cameraId,
                 cameraLabel = segment.settings.cameraLabel,
@@ -563,6 +570,7 @@ class RecordingService : LifecycleService() {
         healthMonitorJob?.cancel()
         requestedSessionSettings = null
         activeSessionSettings = null
+        sessionCapabilities = null
         downgradeState = null
         latestSafetyDecision = null
         pendingStopAlert = null
@@ -598,6 +606,7 @@ class RecordingService : LifecycleService() {
         healthMonitorJob?.cancel()
         requestedSessionSettings = null
         activeSessionSettings = null
+        sessionCapabilities = null
         downgradeState = null
         latestSafetyDecision = null
         pendingStopAlert = StopAlert(message, fallbackGuidance, reason)
@@ -674,7 +683,7 @@ class RecordingService : LifecycleService() {
             return
         }
 
-        val capabilities = CameraCapabilitiesRepository(this).capabilities()
+        val capabilities = sessionCapabilities ?: CameraCapabilitiesRepository(this).capabilities()
         val fallback = RecordingStartupFallbackPolicy
             .fallbackCandidates(active, capabilities)
             .firstOrNull { storageManager.ensureSpaceForNextSegment(it) }
@@ -871,7 +880,10 @@ class RecordingService : LifecycleService() {
         builder: Recorder.Builder,
         settings: RecordingSettings,
     ) {
-        settings.codec.toVideoMimeType()?.let { builder.setVideoMimeType(it) }
+        // HDR lets CameraX pick the matching Main10 profile; forcing the MIME can hit buggy 8-bit paths.
+        if (!settings.dynamicRange.isHdrDynamicRange()) {
+            settings.codec.toVideoMimeType()?.let { builder.setVideoMimeType(it) }
+        }
         builder.setTargetVideoEncodingBitRate(RecordingStorageEstimator.targetVideoBitrate(settings))
         RecordingStorageEstimator.audioBitrate(settings)
             .takeIf { it > 0 }
@@ -892,6 +904,48 @@ class RecordingService : LifecycleService() {
 
     private fun cameraIdOf(info: CameraInfo): String =
         Camera2CameraInfo.from(info).cameraId
+
+    private fun ProcessCameraProvider.cameraInfoFor(settings: RecordingSettings): CameraInfo? =
+        runCatching {
+            getCameraInfo(cameraSelectorFor(settings))
+        }.getOrNull() ?: runCatching {
+            getCameraInfo(CameraSelector.DEFAULT_BACK_CAMERA)
+        }.getOrNull()
+
+    private fun RecordingSettings.coerceToCapabilities(capabilities: CameraCapabilities): RecordingSettings {
+        val camera = capabilities.cameraOptions.firstOrNull { it.id == cameraId }
+            ?: capabilities.cameraOptions.firstOrNull()
+        val resolution = resolution.takeIf { it in capabilities.resolutionOptions }
+            ?: capabilities.resolutionOptions.firstOrNull { it == "720p" }
+            ?: capabilities.resolutionOptions.firstOrNull { it == "1080p" }
+            ?: capabilities.resolutionOptions.firstOrNull()
+            ?: "720p"
+        val frameRate = frameRate.takeIf { it in capabilities.frameRateOptions }
+            ?: capabilities.frameRateOptions.firstOrNull { it == 30 }
+            ?: capabilities.frameRateOptions.firstOrNull()
+            ?: 30
+        val codec = codec.takeIf { saved -> capabilities.codecOptions.any { it.id == saved } }
+            ?: capabilities.codecOptions.firstOrNull { it.id == "h265" }?.id
+            ?: capabilities.codecOptions.firstOrNull { it.id == "h264" }?.id
+            ?: capabilities.codecOptions.firstOrNull()?.id
+            ?: "h265"
+        val dynamicRange = dynamicRange.takeIf { saved -> capabilities.dynamicRangeOptions.any { it.id == saved } }
+            ?: "sdr"
+        val stabilizationMode = stabilizationMode.takeIf { it in capabilities.stabilizationModes }
+            ?: capabilities.stabilizationModes.firstOrNull { it == StabilizationMode.Standard }
+            ?: capabilities.stabilizationModes.firstOrNull()
+            ?: StabilizationMode.Off
+        return copy(
+            cameraId = camera?.id.orEmpty(),
+            cameraLabel = camera?.label ?: "1X 主镜头",
+            resolution = resolution,
+            frameRate = frameRate,
+            codec = codec,
+            dynamicRange = dynamicRange,
+            stabilizationMode = stabilizationMode,
+            cropZoomRatio = cropZoomRatio.coerceCropZoomRatio(),
+        ).coerceToSupportedCombination(capabilities)
+    }
 
     private fun BitratePreset.label(): String = when (this) {
         BitratePreset.SpaceSaver -> "节省空间"

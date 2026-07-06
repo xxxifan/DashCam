@@ -20,6 +20,10 @@ enum class BitratePreset {
     HighQuality,
 }
 
+enum class AudioProcessingMode {
+    Camcorder,
+}
+
 const val DEFAULT_CROP_ZOOM_RATIO = 1f
 const val MIN_CROP_ZOOM_RATIO = 1f
 const val MAX_CROP_ZOOM_RATIO = 2f
@@ -33,6 +37,7 @@ fun Float.coerceCropZoomRatio(): Float =
 data class RecordingSettings(
     val segmentMinutes: Int = 2,
     val audioEnabled: Boolean = true,
+    val audioProcessingMode: AudioProcessingMode = AudioProcessingMode.Camcorder,
     val resolution: String = "720p",
     val frameRate: Int = 30,
     val codec: String = "h265",
@@ -60,6 +65,7 @@ data class RecordingEntry(
     val bitratePreset: BitratePreset = BitratePreset.Standard,
     val dynamicRange: String = "sdr",
     val audioEnabled: Boolean,
+    val audioProcessingMode: AudioProcessingMode = AudioProcessingMode.Camcorder,
     val stabilizationMode: StabilizationMode,
     val cameraId: String = "",
     val cameraLabel: String = "1X 主镜头",
@@ -84,6 +90,7 @@ data class RecordingEntry(
         .put("bitratePreset", bitratePreset.name)
         .put("dynamicRange", dynamicRange)
         .put("audioEnabled", audioEnabled)
+        .put("audioProcessingMode", audioProcessingMode.name)
         .put("stabilizationMode", stabilizationMode.name)
         .put("cameraId", cameraId)
         .put("cameraLabel", cameraLabel)
@@ -109,6 +116,11 @@ data class RecordingEntry(
                 }.getOrDefault(BitratePreset.Standard),
                 dynamicRange = json.optString("dynamicRange", "sdr"),
                 audioEnabled = json.optBoolean("audioEnabled", true),
+                audioProcessingMode = runCatching {
+                    AudioProcessingMode.valueOf(
+                        json.optString("audioProcessingMode", AudioProcessingMode.Camcorder.name),
+                    )
+                }.getOrDefault(AudioProcessingMode.Camcorder),
                 stabilizationMode = runCatching {
                     StabilizationMode.valueOf(json.optString("stabilizationMode", StabilizationMode.Standard.name))
                 }.getOrDefault(StabilizationMode.Standard),
@@ -136,6 +148,7 @@ data class RecordingEntry(
                 bitratePreset = BitratePreset.Standard,
                 dynamicRange = "sdr",
                 audioEnabled = true,
+                audioProcessingMode = AudioProcessingMode.Camcorder,
                 stabilizationMode = StabilizationMode.Standard,
             )
         }

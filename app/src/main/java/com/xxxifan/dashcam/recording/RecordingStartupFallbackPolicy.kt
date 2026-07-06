@@ -1,6 +1,7 @@
 package com.xxxifan.dashcam.recording
 
 import com.xxxifan.dashcam.camera.CameraCapabilities
+import com.xxxifan.dashcam.camera.isRecordingCombinationSupported
 import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.RecordingSettings
 import com.xxxifan.dashcam.data.StabilizationMode
@@ -43,6 +44,7 @@ object RecordingStartupFallbackPolicy {
             }
         }
             .filter { it != requested }
+            .filter { capabilities.isRecordingCombinationSupported(it) }
             .distinctBy {
                 listOf(
                     it.resolution,

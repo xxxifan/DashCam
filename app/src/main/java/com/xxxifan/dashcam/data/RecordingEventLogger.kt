@@ -54,6 +54,7 @@ class RecordingEventLogger private constructor(
             fields = fields + mapOf(
                 "segmentMinutes" to settings.segmentMinutes,
                 "audioEnabled" to settings.audioEnabled,
+                "audioProcessingMode" to settings.audioProcessingMode.name,
                 "resolution" to settings.resolution,
                 "frameRate" to settings.frameRate,
                 "codec" to settings.codec,

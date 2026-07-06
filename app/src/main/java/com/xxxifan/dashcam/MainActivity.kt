@@ -22,6 +22,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraSelector
+import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -116,7 +118,9 @@ import com.xxxifan.dashcam.camera.CameraCapabilities
 import com.xxxifan.dashcam.camera.CameraCapabilitiesRepository
 import com.xxxifan.dashcam.camera.PreviewController
 import com.xxxifan.dashcam.camera.codecLabel
+import com.xxxifan.dashcam.camera.coerceToSupportedCombination
 import com.xxxifan.dashcam.camera.dynamicRangeLabel
+import com.xxxifan.dashcam.camera.isRecordingCombinationSupported
 import com.xxxifan.dashcam.data.AppGuidanceStore
 import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.PlaybackPreferencesStore
@@ -149,6 +153,7 @@ import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToLong
@@ -202,6 +207,7 @@ private fun DashCamApp(
         ),
     ) {
         val context = LocalContext.current
+        val activity = remember(context) { context.findActivity() }
         val appScope = rememberCoroutineScope()
         val appGuidanceStore = remember { AppGuidanceStore() }
         val settingsStore = remember { RecordingSettingsStore() }
@@ -210,7 +216,10 @@ private fun DashCamApp(
         val recordingRepository = remember { RecordingRepository() }
         val thumbnailManager = remember { RecordingThumbnailManager(context, recordingRepository) }
         val eventLogger = remember { RecordingEventLogger.get(context) }
-        val cameraCapabilities = remember { CameraCapabilitiesRepository(context).capabilities() }
+        val cameraCapabilitiesRepository = remember { CameraCapabilitiesRepository(context) }
+        var cameraCapabilities by remember {
+            mutableStateOf(cameraCapabilitiesRepository.capabilities())
+        }
         val uiState by RecordingStateBus.state.collectAsStateWithLifecycle()
         val entries by recordingRepository.entries.collectAsStateWithLifecycle()
         val activeRecordingPaths = remember(uiState.currentSegmentPath) {
@@ -266,12 +275,31 @@ private fun DashCamApp(
             }
         }
 
+        DisposableEffect(activity) {
+            val window = activity?.window
+            val previousColorMode = window?.colorMode
+            window?.colorMode = ActivityInfo.COLOR_MODE_HDR
+            onDispose {
+                if (previousColorMode != null) {
+                    window.colorMode = previousColorMode
+                }
+            }
+        }
+
         LaunchedEffect(cameraCapabilities) {
             settings = settingsStore.update {
                 it.coerceToCapabilities(cameraCapabilities)
                     .coerceToStorage(context)
                     .resolveAutoQualityIfNeeded(context, cameraCapabilities)
             }
+        }
+
+        LaunchedEffect(cameraCapabilitiesRepository) {
+            val provider = ProcessCameraProvider.getInstance(context).await()
+            val cameraInfo = runCatching {
+                provider.getCameraInfo(CameraSelector.DEFAULT_BACK_CAMERA)
+            }.getOrNull()
+            cameraCapabilities = cameraCapabilitiesRepository.capabilities(cameraInfo)
         }
 
         LaunchedEffect(Unit) {
@@ -797,19 +825,29 @@ private fun SettingsScreen(
     val downgradeText = downgradeState?.settingsLockMessage()
     val qualityControlsEnabled = !isRecording && downgradeState == null
     val qualitySettings = downgradeState?.activeSettings ?: settings
+    fun qualityOptionEnabled(
+        update: (RecordingSettings) -> RecordingSettings,
+        isKept: (RecordingSettings) -> Boolean,
+    ): Boolean {
+        if (!qualityControlsEnabled) {
+            return false
+        }
+        val adjusted = update(qualitySettings)
+            .coerceToSupportedCombination(capabilities)
+        return isKept(adjusted) && capabilities.isRecordingCombinationSupported(adjusted)
+    }
     fun onManualQualityChange(update: (RecordingSettings) -> RecordingSettings) {
         onSettingsChange { current ->
-            update(
-                current.copy(
-                    resolution = qualitySettings.resolution,
-                    frameRate = qualitySettings.frameRate,
-                    codec = qualitySettings.codec,
-                    bitratePreset = qualitySettings.bitratePreset,
-                    dynamicRange = qualitySettings.dynamicRange,
-                    stabilizationMode = qualitySettings.stabilizationMode,
-                    autoQualityEnabled = false,
-                ),
+            val base = current.copy(
+                resolution = qualitySettings.resolution,
+                frameRate = qualitySettings.frameRate,
+                codec = qualitySettings.codec,
+                bitratePreset = qualitySettings.bitratePreset,
+                dynamicRange = qualitySettings.dynamicRange,
+                stabilizationMode = qualitySettings.stabilizationMode,
+                autoQualityEnabled = false,
             )
+            update(base).coerceToSupportedCombination(capabilities)
         }
     }
 
@@ -888,14 +926,22 @@ private fun SettingsScreen(
                     title = "自动画质",
                     checked = settings.autoQualityEnabled,
                     enabled = qualityControlsEnabled,
-                    onCheckedChange = { enabled -> onSettingsChange { it.copy(autoQualityEnabled = enabled) } },
+                    onCheckedChange = { enabled ->
+                        onSettingsChange {
+                            it.copy(autoQualityEnabled = enabled)
+                                .coerceToSupportedCombination(capabilities)
+                        }
+                    },
                 )
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 Text("分辨率")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     capabilities.resolutionOptions.forEach { option ->
                         FilterChip(
-                            enabled = qualityControlsEnabled,
+                            enabled = qualityOptionEnabled(
+                                update = { it.copy(resolution = option) },
+                                isKept = { it.resolution == option },
+                            ),
                             selected = qualitySettings.resolution == option,
                             onClick = { onManualQualityChange { it.copy(resolution = option) } },
                             label = { Text(option) },
@@ -907,7 +953,10 @@ private fun SettingsScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     capabilities.frameRateOptions.forEach { option ->
                         FilterChip(
-                            enabled = qualityControlsEnabled,
+                            enabled = qualityOptionEnabled(
+                                update = { it.copy(frameRate = option) },
+                                isKept = { it.frameRate == option },
+                            ),
                             selected = qualitySettings.frameRate == option,
                             onClick = { onManualQualityChange { it.copy(frameRate = option) } },
                             label = { Text("${option}fps") },
@@ -919,7 +968,10 @@ private fun SettingsScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     capabilities.codecOptions.forEach { option ->
                         FilterChip(
-                            enabled = qualityControlsEnabled,
+                            enabled = qualityOptionEnabled(
+                                update = { it.copy(codec = option.id) },
+                                isKept = { it.codec == option.id },
+                            ),
                             selected = qualitySettings.codec == option.id,
                             onClick = { onManualQualityChange { it.copy(codec = option.id) } },
                             label = { Text(option.label) },
@@ -948,7 +1000,10 @@ private fun SettingsScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         capabilities.dynamicRangeOptions.forEach { option ->
                             FilterChip(
-                                enabled = qualityControlsEnabled,
+                                enabled = qualityOptionEnabled(
+                                    update = { it.copy(dynamicRange = option.id) },
+                                    isKept = { it.dynamicRange == option.id },
+                                ),
                                 selected = qualitySettings.dynamicRange == option.id,
                                 onClick = { onManualQualityChange { it.copy(dynamicRange = option.id) } },
                                 label = { Text(option.label) },
@@ -977,7 +1032,10 @@ private fun SettingsScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     capabilities.stabilizationModes.forEach { mode ->
                         FilterChip(
-                            enabled = qualityControlsEnabled,
+                            enabled = qualityOptionEnabled(
+                                update = { it.copy(stabilizationMode = mode) },
+                                isKept = { it.stabilizationMode == mode },
+                            ),
                             selected = qualitySettings.stabilizationMode == mode,
                             onClick = { onManualQualityChange { it.copy(stabilizationMode = mode) } },
                             label = { Text(mode.label()) },
@@ -2088,7 +2146,6 @@ private fun RecordingSettings.coerceToCapabilities(capabilities: CameraCapabilit
         ?: capabilities.stabilizationModes.firstOrNull { it == StabilizationMode.Standard }
         ?: capabilities.stabilizationModes.firstOrNull()
         ?: StabilizationMode.Off
-
     return copy(
         cameraId = camera?.id.orEmpty(),
         cameraLabel = camera?.label ?: "1X 主镜头",
@@ -2098,7 +2155,7 @@ private fun RecordingSettings.coerceToCapabilities(capabilities: CameraCapabilit
         dynamicRange = dynamicRange,
         stabilizationMode = stabilizationMode,
         cropZoomRatio = cropZoomRatio.coerceCropZoomRatio(),
-    )
+    ).coerceToSupportedCombination(capabilities)
 }
 
 private fun RecordingSettings.resolveAutoQualityIfNeeded(

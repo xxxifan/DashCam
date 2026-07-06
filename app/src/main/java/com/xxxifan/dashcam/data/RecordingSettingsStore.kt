@@ -11,6 +11,7 @@ class RecordingSettingsStore(
         return RecordingSettings(
             segmentMinutes = mmkv.decodeInt(KEY_SEGMENT_MINUTES, 2),
             audioEnabled = mmkv.decodeBool(KEY_AUDIO_ENABLED, true),
+            audioProcessingMode = decodeAudioProcessingMode(),
             resolution = mmkv.decodeString(KEY_RESOLUTION, "720p") ?: "720p",
             frameRate = mmkv.decodeInt(KEY_FRAME_RATE, 30),
             codec = decodeCodec(),
@@ -37,6 +38,7 @@ class RecordingSettingsStore(
     fun save(settings: RecordingSettings) {
         mmkv.encode(KEY_SEGMENT_MINUTES, settings.segmentMinutes)
         mmkv.encode(KEY_AUDIO_ENABLED, settings.audioEnabled)
+        mmkv.encode(KEY_AUDIO_PROCESSING_MODE, settings.audioProcessingMode.name)
         mmkv.encode(KEY_RESOLUTION, settings.resolution)
         mmkv.encode(KEY_FRAME_RATE, settings.frameRate)
         mmkv.encode(KEY_CODEC, settings.codec)
@@ -59,6 +61,13 @@ class RecordingSettingsStore(
         }.getOrDefault(StabilizationMode.Standard)
     }
 
+    private fun decodeAudioProcessingMode(): AudioProcessingMode {
+        val name = mmkv.decodeString(KEY_AUDIO_PROCESSING_MODE, AudioProcessingMode.Camcorder.name)
+        return runCatching {
+            AudioProcessingMode.valueOf(name ?: AudioProcessingMode.Camcorder.name)
+        }.getOrDefault(AudioProcessingMode.Camcorder)
+    }
+
     private fun decodeCodec(): String {
         val value = mmkv.decodeString(KEY_CODEC, DEFAULT_CODEC) ?: DEFAULT_CODEC
         return if (value == LEGACY_AUTO_CODEC) DEFAULT_CODEC else value
@@ -76,6 +85,7 @@ class RecordingSettingsStore(
     private companion object {
         const val KEY_SEGMENT_MINUTES = "segment_minutes"
         const val KEY_AUDIO_ENABLED = "audio_enabled"
+        const val KEY_AUDIO_PROCESSING_MODE = "audio_processing_mode"
         const val KEY_RESOLUTION = "resolution"
         const val KEY_FRAME_RATE = "frame_rate"
         const val KEY_CODEC = "codec"
