@@ -144,6 +144,7 @@ import com.xxxifan.dashcam.data.formatBytes
 import com.xxxifan.dashcam.data.formatDuration
 import com.xxxifan.dashcam.data.recordingCropZoomRatios
 import com.xxxifan.dashcam.data.timeLabel
+import com.xxxifan.dashcam.device.DeviceDisplayNameResolver
 import com.xxxifan.dashcam.recording.RecordingService
 import com.xxxifan.dashcam.recording.RecordingDowngradeReason
 import com.xxxifan.dashcam.recording.RecordingDowngradeState
@@ -213,6 +214,7 @@ private fun DashCamApp(
     ) {
         val context = LocalContext.current
         val activity = remember(context) { context.findActivity() }
+        val deviceDisplayName = remember(context) { DeviceDisplayNameResolver.displayName(context) }
         val appScope = rememberCoroutineScope()
         val appGuidanceStore = remember { AppGuidanceStore() }
         val settingsStore = remember { RecordingSettingsStore() }
@@ -463,6 +465,7 @@ private fun DashCamApp(
                 topBar = {
                     AppTopBar(
                         isRecording = uiState.isRecording,
+                        deviceDisplayName = deviceDisplayName,
                     )
                 },
                 bottomBar = {
@@ -575,13 +578,16 @@ private fun DashCamApp(
 @Composable
 private fun AppTopBar(
     isRecording: Boolean,
+    deviceDisplayName: String,
 ) {
     TopAppBar(
         title = {
             Column {
                 Text("DashCam", fontWeight = FontWeight.SemiBold)
                 Text(
-                    if (isRecording) "前台服务录制中" else "Pixel 10a 行车记录仪",
+                    if (isRecording) "前台服务录制中" else "${deviceDisplayName}行车记录仪",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
