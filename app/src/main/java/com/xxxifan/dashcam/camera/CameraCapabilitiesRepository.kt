@@ -42,14 +42,16 @@ class CameraCapabilitiesRepository(
         val officialHighSpeedFrameRateOptionsByResolution = cameraInfo
             ?.officialHighSpeedFrameRateOptionsByResolution(resolutionOptions)
             .orEmpty()
-        val frameRateOptionsByResolution = characteristics
-            ?.frameRateOptionsByResolution(
+        val frameRateOptionMaps = characteristics
+            ?.frameRateOptionMaps(
                 cameraId = logicalBackCamera.orEmpty(),
                 cameraInfo = cameraInfo,
                 resolutionOptions = resolutionOptions,
                 officialHighSpeedFrameRateOptionsByResolution = officialHighSpeedFrameRateOptionsByResolution,
             )
-            .orDefaultFrameRatesByResolution(resolutionOptions)
+            ?: FrameRateOptionMaps.defaults(resolutionOptions)
+        val frameRateOptionsByResolution = frameRateOptionMaps.displayOptionsByResolution
+        val regularFrameRateOptionsByResolution = frameRateOptionMaps.regularOptionsByResolution
         val frameRateOptions = frameRateOptionsByResolution
             .values
             .flatten()
@@ -68,6 +70,7 @@ class CameraCapabilitiesRepository(
             cameraInfo = cameraInfo,
             resolutionOptions = resolutionOptions,
             frameRateOptionsByResolution = frameRateOptionsByResolution,
+            regularFrameRateOptionsByResolution = regularFrameRateOptionsByResolution,
             highSpeedFrameRateOptionsByResolution = officialHighSpeedFrameRateOptionsByResolution,
             codecOptions = codecOptions,
             dynamicRangeOptions = dynamicRangeOptions,
@@ -85,6 +88,7 @@ class CameraCapabilitiesRepository(
             resolutionOptions = resolutionOptions,
             frameRateOptions = frameRateOptions,
             frameRateOptionsByResolution = frameRateOptionsByResolution,
+            regularFrameRateOptionsByResolution = regularFrameRateOptionsByResolution,
             highSpeedFrameRateOptionsByResolution = officialHighSpeedFrameRateOptionsByResolution,
             codecOptions = codecOptions,
             dynamicRangeOptions = dynamicRangeOptions,
@@ -214,12 +218,12 @@ class CameraCapabilitiesRepository(
         }
     }
 
-    private fun CameraCharacteristics.frameRateOptionsByResolution(
+    private fun CameraCharacteristics.frameRateOptionMaps(
         cameraId: String,
         cameraInfo: CameraInfo?,
         resolutionOptions: List<String>,
         officialHighSpeedFrameRateOptionsByResolution: Map<String, List<Int>>,
-    ): Map<String, List<Int>> {
+    ): FrameRateOptionMaps {
         val streamMap = get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         val recorderSizes = streamMap
             ?.getOutputSizes(MediaRecorder::class.java)
@@ -242,7 +246,9 @@ class CameraCapabilitiesRepository(
         val samsungVendorFrameRateOptionsByResolution = samsungVendorRanges
             .samsungFrameRateOptionsByResolution(resolutionOptions)
         val fallbackRanges = cameraXRanges.ifEmpty { camera2Ranges }
-        val result = resolutionOptions.associateWith { resolution ->
+        val displayOptionsByResolution = mutableMapOf<String, List<Int>>()
+        val regularOptionsByResolution = mutableMapOf<String, List<Int>>()
+        resolutionOptions.forEach { resolution ->
             val matchingSizes = recorderSizes.exactSizesForResolution(resolution)
             val maxFps = matchingSizes.maxOfOrNull { size ->
                 runCatching {
@@ -257,6 +263,20 @@ class CameraCapabilitiesRepository(
             val profileOptions = profileFrameRateOptionsByResolution[resolution].orEmpty()
             val highSpeedOptions = highSpeedFrameRateOptionsByResolution[resolution].orEmpty()
             val samsungVendorOptions = samsungVendorFrameRateOptionsByResolution[resolution].orEmpty()
+            val regularRangeOptions = candidateFrameRates
+                .filter { fps -> fallbackRanges.supportsCaptureFps(fps) }
+            val resolutionConfirmedOptions = (sizeLimitedOptions + profileOptions)
+                .distinct()
+            val regularOptions = candidateFrameRates
+                .filter { fps ->
+                    fps in regularRangeOptions &&
+                        (
+                            fps <= MAX_REGULAR_FRAME_RATE ||
+                                fps in resolutionConfirmedOptions
+                            )
+                }
+                .distinct()
+                .sorted()
             val recordingOptions = (
                 sizeLimitedOptions +
                     profileOptions +
@@ -267,8 +287,11 @@ class CameraCapabilitiesRepository(
                 .sorted()
             val fallbackOptions = candidateFrameRates
                 .filter { fps -> fallbackRanges.supportsFps(fps) }
-            recordingOptions
+            displayOptionsByResolution[resolution] = recordingOptions
                 .ifEmpty { fallbackOptions }
+                .ifEmpty { listOf(30) }
+            regularOptionsByResolution[resolution] = regularOptions
+                .ifEmpty { fallbackOptions.filter { fps -> fps <= MAX_REGULAR_FRAME_RATE } }
                 .ifEmpty { listOf(30) }
         }
         logFpsDiagnostics(
@@ -281,9 +304,13 @@ class CameraCapabilitiesRepository(
             officialHighSpeedFrameRateOptionsByResolution = officialHighSpeedFrameRateOptionsByResolution,
             samsungVendorFrameRateOptionsByResolution = samsungVendorFrameRateOptionsByResolution,
             samsungVendorRanges = samsungVendorRanges,
-            frameRateOptionsByResolution = result,
+            regularFrameRateOptionsByResolution = regularOptionsByResolution,
+            frameRateOptionsByResolution = displayOptionsByResolution,
         )
-        return result
+        return FrameRateOptionMaps(
+            displayOptionsByResolution = displayOptionsByResolution,
+            regularOptionsByResolution = regularOptionsByResolution,
+        )
     }
 
     private fun CameraCharacteristics.camera2DynamicRangeOptions(): List<DynamicRangeOption> {
@@ -351,6 +378,7 @@ class CameraCapabilitiesRepository(
         cameraInfo: CameraInfo?,
         resolutionOptions: List<String>,
         frameRateOptionsByResolution: Map<String, List<Int>>,
+        regularFrameRateOptionsByResolution: Map<String, List<Int>>,
         highSpeedFrameRateOptionsByResolution: Map<String, List<Int>>,
         codecOptions: List<VideoCodecOption>,
         dynamicRangeOptions: List<DynamicRangeOption>,
@@ -376,8 +404,10 @@ class CameraCapabilitiesRepository(
                         val frameRateOptions = frameRateOptionsByResolution[resolution]
                             .orDefaultFrameRates()
                         frameRateOptions.forEach { frameRate ->
+                            val requiresHighSpeedSession = frameRate > MAX_REGULAR_FRAME_RATE &&
+                                frameRate !in regularFrameRateOptionsByResolution[resolution].orEmpty()
                             if (
-                                frameRate > MAX_REGULAR_FRAME_RATE &&
+                                requiresHighSpeedSession &&
                                 frameRate !in highSpeedFrameRateOptionsByResolution[resolution].orEmpty()
                             ) {
                                 return@forEach
@@ -394,7 +424,11 @@ class CameraCapabilitiesRepository(
                                         codec = codec.id,
                                         dynamicRange = dynamicRange.id,
                                         stabilizationMode = stabilizationMode,
-                                    ).takeIf { it.isAllowedByDashCamPolicy() }?.let(::add)
+                                    ).takeIf {
+                                        it.isAllowedByDashCamPolicy(
+                                            requiresHighSpeedSession = requiresHighSpeedSession,
+                                        )
+                                    }?.let(::add)
                                 }
                         }
                     }
@@ -580,6 +614,7 @@ class CameraCapabilitiesRepository(
         officialHighSpeedFrameRateOptionsByResolution: Map<String, List<Int>>,
         samsungVendorFrameRateOptionsByResolution: Map<String, List<Int>>,
         samsungVendorRanges: List<Range<Int>>,
+        regularFrameRateOptionsByResolution: Map<String, List<Int>>,
         frameRateOptionsByResolution: Map<String, List<Int>>,
     ) {
         Log.d(
@@ -592,6 +627,7 @@ class CameraCapabilitiesRepository(
                 "Samsung fps=${samsungVendorRanges.rangeLabels()}, " +
                 "Samsung resolved=$samsungVendorFrameRateOptionsByResolution, " +
                 "MediaRecorder sizes=${recorderSizes.sizeLabels()}, " +
+                "regular=$regularFrameRateOptionsByResolution, " +
                 "resolved=$frameRateOptionsByResolution",
         )
     }
@@ -904,6 +940,19 @@ class CameraCapabilitiesRepository(
         val queriedRanges: Set<DynamicRange>,
         val resolvedRanges: Set<DynamicRange>,
     )
+
+    private data class FrameRateOptionMaps(
+        val displayOptionsByResolution: Map<String, List<Int>>,
+        val regularOptionsByResolution: Map<String, List<Int>>,
+    ) {
+        companion object {
+            fun defaults(resolutionOptions: List<String>): FrameRateOptionMaps =
+                FrameRateOptionMaps(
+                    displayOptionsByResolution = resolutionOptions.associateWith { listOf(30) },
+                    regularOptionsByResolution = resolutionOptions.associateWith { listOf(30) },
+                )
+        }
+    }
 
     private companion object {
         const val HDR_CHECK_TAG = "HDR_CHECK"

@@ -52,6 +52,7 @@ import com.xxxifan.dashcam.camera.codecLabel
 import com.xxxifan.dashcam.camera.coerceToSupportedCombination
 import com.xxxifan.dashcam.camera.frameRateOptionsForResolution
 import com.xxxifan.dashcam.camera.isHdrDynamicRange
+import com.xxxifan.dashcam.camera.isHighSpeedRequiredForResolution
 import com.xxxifan.dashcam.camera.toCameraXDynamicRange
 import com.xxxifan.dashcam.camera.toLogFields
 import com.xxxifan.dashcam.camera.toVideoMimeType
@@ -269,7 +270,7 @@ class RecordingService : LifecycleService() {
         settings: RecordingSettings,
     ): VideoCapture<Recorder>? {
         val selector = cameraSelectorFor(settings)
-        val useHighSpeed = settings.requiresHighSpeedSession()
+        val useHighSpeed = settings.requiresHighSpeedSession(sessionCapabilities)
         if (useHighSpeed) {
             bindHighSpeedRecordingCapture(provider, selector, settings)
                 ?.let { return it }
@@ -278,16 +279,20 @@ class RecordingService : LifecycleService() {
             Log.w(FPS_CHECK_TAG, message)
             return null
         }
-        if (settings.frameRate > MAX_REGULAR_FRAME_RATE) {
-            val message = "Refusing regular recording session above ${MAX_REGULAR_FRAME_RATE}fps."
+        if (settings.frameRate > MAX_REGULAR_FRAME_RATE && !settings.isRegularSessionSupported(sessionCapabilities)) {
+            val message = "Refusing unverified regular recording session above ${MAX_REGULAR_FRAME_RATE}fps."
             Log.w(TAG, message)
             Log.w(FPS_CHECK_TAG, message)
             eventLogger.logRecordingSettings(
                 event = "regular_session_rejected",
                 settings = settings,
                 fields = mapOf(
-                    "reason" to "fps_above_regular_session_limit",
+                    "reason" to "fps_above_regular_session_limit_without_capability",
                     "maxRegularFrameRate" to MAX_REGULAR_FRAME_RATE,
+                    "regularFrameRates" to sessionCapabilities
+                        ?.regularFrameRateOptionsByResolution
+                        ?.get(settings.resolution)
+                        .orEmpty(),
                 ),
             )
             return null
@@ -1132,10 +1137,20 @@ class RecordingService : LifecycleService() {
         else -> Quality.FHD
     }
 
-    private fun RecordingSettings.requiresHighSpeedSession(): Boolean =
-        frameRate > 30 &&
-            !dynamicRange.isHdrDynamicRange() &&
-            stabilizationMode == StabilizationMode.Off
+    private fun RecordingSettings.requiresHighSpeedSession(capabilities: CameraCapabilities?): Boolean =
+        capabilities?.isHighSpeedRequiredForResolution(resolution, frameRate)
+            ?: (
+                frameRate > 30 &&
+                    !dynamicRange.isHdrDynamicRange() &&
+                    stabilizationMode == StabilizationMode.Off
+                )
+
+    private fun RecordingSettings.isRegularSessionSupported(capabilities: CameraCapabilities?): Boolean =
+        frameRate <= MAX_REGULAR_FRAME_RATE ||
+            frameRate in capabilities
+                ?.regularFrameRateOptionsByResolution
+                ?.get(resolution)
+                .orEmpty()
 
     private fun Int.asFixedRange(): Range<Int> = Range(this, this)
 

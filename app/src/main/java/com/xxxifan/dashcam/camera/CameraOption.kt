@@ -83,6 +83,7 @@ data class CameraCapabilities(
     val resolutionOptions: List<String>,
     val frameRateOptions: List<Int>,
     val frameRateOptionsByResolution: Map<String, List<Int>> = emptyMap(),
+    val regularFrameRateOptionsByResolution: Map<String, List<Int>> = emptyMap(),
     val highSpeedFrameRateOptionsByResolution: Map<String, List<Int>> = emptyMap(),
     val codecOptions: List<VideoCodecOption>,
     val dynamicRangeOptions: List<DynamicRangeOption>,
@@ -149,8 +150,10 @@ fun String.resolutionRank(): Int = when (this) {
     else -> 1
 }
 
-fun RecordingCombination.isAllowedByDashCamPolicy(): Boolean {
-    if (frameRate > 30) {
+fun RecordingCombination.isAllowedByDashCamPolicy(
+    requiresHighSpeedSession: Boolean = false,
+): Boolean {
+    if (requiresHighSpeedSession) {
         return !dynamicRange.isHdrDynamicRange() &&
             stabilizationMode == StabilizationMode.Off
     }
@@ -210,6 +213,11 @@ fun CameraCapabilities.highSpeedFrameRateOptionsForResolution(resolution: String
         ?.takeIf { it.isNotEmpty() }
         ?: emptyList()
 
+fun CameraCapabilities.regularFrameRateOptionsForResolution(resolution: String): List<Int> =
+    regularFrameRateOptionsByResolution[resolution]
+        ?.takeIf { it.isNotEmpty() }
+        ?: frameRateOptionsForResolution(resolution).filter { it <= 30 }
+
 fun RecordingSettings.coerceToSupportedCombination(capabilities: CameraCapabilities): RecordingSettings {
     if (capabilities.isRecordingCombinationSupported(this)) {
         return this
@@ -247,7 +255,9 @@ private fun CameraCapabilities.fallbackCombinationSupported(
         codecOptions.any { it.id == codec } &&
         dynamicRangeOptions.any { it.id == dynamicRange } &&
         stabilizationMode in stabilizationModes &&
-        combination.isAllowedByDashCamPolicy()
+        combination.isAllowedByDashCamPolicy(
+            requiresHighSpeedSession = isHighSpeedRequiredForResolution(resolution, frameRate),
+        )
 }
 
 private fun CameraCapabilities.fallbackCombinations(): List<RecordingCombination> =
@@ -266,7 +276,14 @@ private fun CameraCapabilities.fallbackCombinations(): List<RecordingCombination
                                 codec = codec.id,
                                 dynamicRange = dynamicRange.id,
                                 stabilizationMode = stabilizationMode,
-                            ).takeIf { it.isAllowedByDashCamPolicy() }?.let(::add)
+                            ).takeIf {
+                                it.isAllowedByDashCamPolicy(
+                                    requiresHighSpeedSession = isHighSpeedRequiredForResolution(
+                                        resolution,
+                                        frameRate,
+                                    ),
+                                )
+                            }?.let(::add)
                         }
                     }
                 }
@@ -278,7 +295,15 @@ private fun CameraCapabilities.isFrameRateRecordableForResolution(
     resolution: String,
     frameRate: Int,
 ): Boolean =
-    frameRate <= 30 || frameRate in highSpeedFrameRateOptionsForResolution(resolution)
+    frameRate <= 30 ||
+        frameRate in regularFrameRateOptionsForResolution(resolution) ||
+        frameRate in highSpeedFrameRateOptionsForResolution(resolution)
+
+fun CameraCapabilities.isHighSpeedRequiredForResolution(
+    resolution: String,
+    frameRate: Int,
+): Boolean =
+    frameRate > 30 && frameRate !in regularFrameRateOptionsForResolution(resolution)
 
 private fun RecordingCombination.preferenceScore(requested: RecordingSettings): Int {
     var score = 0
