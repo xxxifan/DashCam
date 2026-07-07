@@ -250,6 +250,7 @@ private fun DashCamApp(
         }
         var selectedTab by remember { mutableIntStateOf(0) }
         var showConfirm by remember { mutableStateOf(false) }
+        var showBackConfirmDialog by remember { mutableStateOf(false) }
         var showBatteryOptimizationPrompt by remember { mutableStateOf(false) }
         val shouldShowConfirmAfterPermission = consumePermissionResult()
         val hdrWindowEnabled = playbackEntry == null &&
@@ -425,6 +426,23 @@ private fun DashCamApp(
             )
         }
 
+        if (showBackConfirmDialog) {
+            BackWhileRecordingDialog(
+                onDismiss = { showBackConfirmDialog = false },
+                onGoBackground = {
+                    showBackConfirmDialog = false
+                    activity?.moveTaskToBack(true)
+                },
+                onStopRecording = {
+                    showBackConfirmDialog = false
+                    alertStore.clearLastStopAlert()
+                    stopAlert = null
+                    context.stopRecordingService()
+                    activity?.moveTaskToBack(true)
+                },
+            )
+        }
+
         val activePlaybackEntry = playbackEntry
         val shareRecording: (RecordingEntry) -> Unit = { entry ->
             eventLogger.log(
@@ -463,6 +481,9 @@ private fun DashCamApp(
                 playbackPreferencesStore = playbackPreferencesStore,
             )
         } else {
+            BackHandler(enabled = uiState.isRecording) {
+                showBackConfirmDialog = true
+            }
             Scaffold(
                 topBar = {
                     AppTopBar(
@@ -2081,6 +2102,29 @@ private fun BatteryOptimizationPromptDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text(stringResource(R.string.battery_optimization_prompt_dismiss))
+            }
+        },
+    )
+}
+
+@Composable
+private fun BackWhileRecordingDialog(
+    onDismiss: () -> Unit,
+    onGoBackground: () -> Unit,
+    onStopRecording: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.back_while_recording_title)) },
+        text = { Text(stringResource(R.string.back_while_recording_body)) },
+        confirmButton = {
+            Button(onClick = onGoBackground) {
+                Text(stringResource(R.string.back_while_recording_background))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onStopRecording) {
+                Text(stringResource(R.string.back_while_recording_stop))
             }
         },
     )

@@ -28,4 +28,8 @@
     <string name="battery_low_body">电量较低，建议连接电源。</string>
     <string name="battery_downgrade_body">电量较低且未连接电源，已降低视频质量以延长录制。</string>
     <string name="battery_emergency_stop_body">电量过低，录制已停止以避免视频损坏。</string>
+    <string name="back_while_recording_title">正在录制中</string>
+    <string name="back_while_recording_body">行车记录仪正在运行中，返回后台会继续录制。</string>
+    <string name="back_while_recording_background">返回后台</string>
+    <string name="back_while_recording_stop">结束录制</string>
 </resources>
