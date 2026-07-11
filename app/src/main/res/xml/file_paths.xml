@@ -3,4 +3,7 @@
     <external-files-path
         name="recordings"
         path="Movies/DashCam/" />
+    <files-path
+        name="device_logs"
+        path="device_logs/" />
 </paths>

@@ -28,6 +28,11 @@ DashCam 是一个使用 Android 手机作为行车记录仪的实验性应用。
   - 删除单个视频或按时间清理。
   - 导出到系统媒体库 `Movies/DashCam`。
   - 通过系统分享面板分享视频。
+- 外部记录仪：
+  - 探测 `192.168.1.254` 的 Novatek XML / HTTP / RTSP 协议。
+  - 探测 `192.168.169.1` 的 JSON / HTTP / RTSP TCP 协议。
+  - 实时预览、分类读取远端录像、在线播放和断点下载。
+  - 启动、Wi-Fi 网络变化和手动探测均写入独立设备诊断文件。
 
 ## 技术栈
 
@@ -36,6 +41,7 @@ DashCam 是一个使用 Android 手机作为行车记录仪的实验性应用。
 - CameraX VideoCapture
 - Camera2Interop
 - Media3 ExoPlayer
+- Media3 RTSP
 - MMKV
 - Kotlin Coroutines
 - Gradle Kotlin DSL
@@ -82,6 +88,8 @@ versionName = "0.1.0"
 - 通知：显示录制中的常驻通知。
 - 前台服务：录制时保持前台服务运行。
 - 唤醒锁：尽量维持录制过程稳定。
+- 网络状态和 Wi-Fi 状态：探测并连接当前记录仪局域网。
+- 网络访问：访问记录仪的 HTTP 和 RTSP 服务。
 
 部分系统会额外限制后台运行、锁屏相机、耗电或发热场景。建议在系统设置中允许 DashCam 后台运行，并在长时间录制时连接电源。
 
@@ -101,6 +109,28 @@ Movies/DashCam
 
 卸载应用可能会删除应用专属目录中的录制文件。需要长期保留的视频请先导出。
 
+从外部记录仪下载的文件保存在按协议驱动隔离的目录中：
+
+```text
+Android/data/com.xxxifan.dashcam/files/Movies/DashCam/devices/<device-driver-id>
+```
+
+文件名、容器格式和下载后处理由对应设备驱动决定。当前两个旧款驱动保留设备原始 MP4、MOV、TS 或 JPEG；不会在通用下载层强制转码。
+
+## 外部记录仪
+
+先在系统中连接记录仪 Wi-Fi，再打开底部“设备”栏目。应用会固定通过 Wi-Fi `Network` 探测局域网地址，避免无互联网的记录仪热点被 Android 绕到移动网络。
+
+设备协议通过 `DeviceProtocolDriver` 和 `DeviceSession` 扩展。每个驱动独立负责：
+
+- 设备探测和协议握手。
+- 预览准备、预览源及传输策略。
+- 远端媒体分类和文件列表解析。
+- 文件格式、下载文件名、断点下载及下载后处理。
+- 会话退出和设备状态恢复。
+
+新款 iCatch SDK 当前未集成。应用会把 `integrationAvailable=false` 和 `NotIntegrated` 写入设备日志，不会把“没有 SDK”误报成“设备不支持”。未来可以通过 `NewDeviceSdkProbe` 和新的设备驱动接入。
+
 ## 使用建议
 
 - 首次使用建议从 `1080p30 + H.265 + 标准` 开始测试。
@@ -115,6 +145,7 @@ Movies/DashCam
 app/src/main/java/com/xxxifan/dashcam
 ├── camera/       # 相机能力探测、镜头选择、预览绑定
 ├── data/         # 设置、录制记录、缩略图、事件日志
+├── device/       # 手机名称和可扩展外部记录仪协议驱动
 ├── recording/    # 前台录制服务、画质解析、降档策略、录制状态
 ├── safety/       # 存储、温度、电量、录制管线安全策略
 ├── storage/      # 循环录制空间估算和清理
@@ -124,6 +155,14 @@ app/src/main/java/com/xxxifan/dashcam
 ## 诊断日志
 
 应用会在私有目录写入录制事件日志，用于排查设备能力、录制参数、分段结果、空间清理和异常停止原因。日志不会自动上传。
+
+外部设备探测和协议操作另外写入 UTF-8 JSON Lines 文件：
+
+```text
+files/device_logs/device-events-YYYYMMDD.log
+```
+
+设备页会显示日志绝对路径和最近记录，并允许通过系统分享面板导出完整文件。
 
 如果你要公开 issue，请先检查日志中是否包含本地文件路径、设备信息或其他不想公开的内容。
 

@@ -55,6 +55,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
@@ -147,6 +148,8 @@ import com.xxxifan.dashcam.data.formatDuration
 import com.xxxifan.dashcam.data.recordingCropZoomRatios
 import com.xxxifan.dashcam.data.timeLabel
 import com.xxxifan.dashcam.device.DeviceDisplayNameResolver
+import com.xxxifan.dashcam.device.remote.DeviceManager
+import com.xxxifan.dashcam.device.remote.DeviceScreen
 import com.xxxifan.dashcam.recording.RecordingService
 import com.xxxifan.dashcam.recording.RecordingDowngradeReason
 import com.xxxifan.dashcam.recording.RecordingDowngradeState
@@ -225,6 +228,7 @@ private fun DashCamApp(
         val recordingRepository = remember { RecordingRepository() }
         val thumbnailManager = remember { RecordingThumbnailManager(context, recordingRepository) }
         val eventLogger = remember { RecordingEventLogger.get(context) }
+        val deviceManager = remember { DeviceManager.get(context) }
         val cameraCapabilitiesRepository = remember { CameraCapabilitiesRepository(context) }
         var cameraCapabilities by remember {
             mutableStateOf(cameraCapabilitiesRepository.capabilities())
@@ -508,6 +512,12 @@ private fun DashCamApp(
                         NavigationBarItem(
                             selected = selectedTab == 2,
                             onClick = { selectedTab = 2 },
+                            icon = { Icon(Icons.Filled.Devices, contentDescription = null) },
+                            label = { Text("设备") },
+                        )
+                        NavigationBarItem(
+                            selected = selectedTab == 3,
+                            onClick = { selectedTab = 3 },
                             icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                             label = { Text("设置") },
                         )
@@ -537,7 +547,7 @@ private fun DashCamApp(
                             stopAlert = null
                             context.stopRecordingService()
                         },
-                        onOpenSettings = { selectedTab = 2 },
+                        onOpenSettings = { selectedTab = 3 },
                     )
                     1 -> LibraryScreen(
                         padding = padding,
@@ -576,7 +586,11 @@ private fun DashCamApp(
                         onShare = shareRecording,
                         onExport = exportRecording,
                     )
-                    2 -> SettingsScreen(
+                    2 -> DeviceScreen(
+                        padding = padding,
+                        manager = deviceManager,
+                    )
+                    3 -> SettingsScreen(
                         padding = padding,
                         settings = settings,
                         isRecording = uiState.isRecording,
