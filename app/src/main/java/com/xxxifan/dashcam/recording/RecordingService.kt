@@ -45,6 +45,7 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.xxxifan.dashcam.MainActivity
 import com.xxxifan.dashcam.R
+import com.xxxifan.dashcam.audio.AudioDenoiseManager
 import com.xxxifan.dashcam.camera.CameraCapabilities
 import com.xxxifan.dashcam.camera.CameraCapabilitiesRepository
 import com.xxxifan.dashcam.camera.CameraSelectionId
@@ -630,6 +631,7 @@ class RecordingService : LifecycleService() {
                 cropZoomRatio = segment.settings.cropZoomRatio,
             )
             recordingRepository.add(entry)
+            AudioDenoiseManager.get(this).enqueueAutomatically(entry)
             eventLogger.logRecordingSettings(
                 event = "segment_finalize_success",
                 settings = segment.settings,

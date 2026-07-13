@@ -31,6 +31,8 @@ class RecordingRepository(
         persist(next)
     }
 
+    fun findById(id: String): RecordingEntry? = loadEntries().firstOrNull { it.id == id }
+
     fun markExported(id: String) {
         val next = loadEntries().map { existing ->
             if (existing.id == id) {

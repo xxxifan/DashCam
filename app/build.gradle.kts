@@ -46,10 +46,13 @@ dependencies {
 
     implementation("androidx.media3:media3-exoplayer:1.9.0")
     implementation("androidx.media3:media3-exoplayer-rtsp:1.9.0")
+    implementation("androidx.media3:media3-transformer:1.9.0")
     implementation("androidx.media3:media3-ui:1.9.0")
     implementation("com.tencent:mmkv:2.4.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.10.2")
+
+    testImplementation("junit:junit:4.13.2")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

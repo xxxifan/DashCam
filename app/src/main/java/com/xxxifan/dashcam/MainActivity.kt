@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
@@ -128,6 +129,11 @@ import com.xxxifan.dashcam.camera.frameRateOptionsForResolution
 import com.xxxifan.dashcam.camera.isHdrDynamicRange
 import com.xxxifan.dashcam.camera.isRecordingCombinationSupported
 import com.xxxifan.dashcam.camera.toLogFields
+import com.xxxifan.dashcam.audio.AudioDenoiseManager
+import com.xxxifan.dashcam.audio.AudioDenoiseStatus
+import com.xxxifan.dashcam.audio.AudioDenoiseTask
+import com.xxxifan.dashcam.audio.CURRENT_AUDIO_DENOISE_VERSION
+import com.xxxifan.dashcam.audio.statusLabel
 import com.xxxifan.dashcam.data.AppGuidanceStore
 import com.xxxifan.dashcam.data.BitratePreset
 import com.xxxifan.dashcam.data.FocusMode
@@ -192,6 +198,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        AudioDenoiseManager.get(this).setAppVisible(true)
+    }
+
+    override fun onPause() {
+        AudioDenoiseManager.get(this).setAppVisible(false)
+        super.onPause()
+    }
+
     private fun requestRecordingPermissions() {
         permissionLauncher.launch(
             arrayOf(
@@ -226,6 +242,7 @@ private fun DashCamApp(
         val playbackPreferencesStore = remember { PlaybackPreferencesStore() }
         val alertStore = remember { RecordingAlertStore() }
         val recordingRepository = remember { RecordingRepository() }
+        val audioDenoiseManager = remember { AudioDenoiseManager.get(context) }
         val thumbnailManager = remember { RecordingThumbnailManager(context, recordingRepository) }
         val eventLogger = remember { RecordingEventLogger.get(context) }
         val deviceManager = remember { DeviceManager.get(context) }
@@ -235,6 +252,7 @@ private fun DashCamApp(
         }
         val uiState by RecordingStateBus.state.collectAsStateWithLifecycle()
         val entries by recordingRepository.entries.collectAsStateWithLifecycle()
+        val audioDenoiseTasks by audioDenoiseManager.tasks.collectAsStateWithLifecycle()
         val activeRecordingPaths = remember(uiState.currentSegmentPath) {
             setOfNotNull(uiState.currentSegmentPath)
         }
@@ -333,6 +351,20 @@ private fun DashCamApp(
                 directory = LoopStorageManager.recordingDirectory(context),
                 excludedPaths = activeRecordingPaths,
             )
+        }
+
+        LaunchedEffect(recordingRepository) {
+            RecordingRepository.changes.collect {
+                recordingRepository.refresh()
+            }
+        }
+
+        LaunchedEffect(uiState.isRecording) {
+            audioDenoiseManager.setRecordingActive(uiState.isRecording)
+        }
+
+        LaunchedEffect(entries) {
+            audioDenoiseManager.enqueueExisting(entries)
         }
 
         LaunchedEffect(Unit) {
@@ -479,9 +511,13 @@ private fun DashCamApp(
             VideoPlaybackScreen(
                 entry = activePlaybackEntry,
                 entries = entries,
+                audioDenoiseTasks = audioDenoiseTasks,
                 onDismiss = { playbackEntry = null },
                 onShare = shareRecording,
                 onExport = exportRecording,
+                onRequestDenoise = { entry, force ->
+                    audioDenoiseManager.requestManually(entry.id, forceProcessing = force)
+                },
                 playbackPreferencesStore = playbackPreferencesStore,
             )
         } else {
@@ -552,6 +588,7 @@ private fun DashCamApp(
                     1 -> LibraryScreen(
                         padding = padding,
                         entries = entries,
+                        audioDenoiseTasks = audioDenoiseTasks,
                         recordingState = uiState,
                         onOpenPlayback = { playbackEntry = it },
                         onStopRecording = {
@@ -560,6 +597,7 @@ private fun DashCamApp(
                             context.stopRecordingService()
                         },
                         onDelete = { entry ->
+                            audioDenoiseManager.remove(entry.id)
                             recordingRepository.delete(entry)
                             eventLogger.log(
                                 event = "delete_recording",
@@ -572,6 +610,7 @@ private fun DashCamApp(
                             )
                         },
                         onDeleteAll = { targets, reason ->
+                            targets.forEach { audioDenoiseManager.remove(it.id) }
                             val deletedCount = recordingRepository.deleteAll(targets)
                             eventLogger.log(
                                 event = "delete_recordings_bulk",
@@ -1329,6 +1368,7 @@ private enum class CleanupRetentionOption(
 private fun LibraryScreen(
     padding: PaddingValues,
     entries: List<RecordingEntry>,
+    audioDenoiseTasks: Map<String, AudioDenoiseTask>,
     recordingState: RecordingUiState,
     onOpenPlayback: (RecordingEntry) -> Unit,
     onStopRecording: () -> Unit,
@@ -1427,6 +1467,7 @@ private fun LibraryScreen(
             items(dayEntries, key = { it.id }) { entry ->
                 RecordingListItem(
                     entry = entry,
+                    audioDenoiseTask = audioDenoiseTasks[entry.id],
                     onClick = { onOpenPlayback(entry) },
                     onDelete = { pendingDelete = entry },
                     onShare = { onShare(entry) },
@@ -1547,6 +1588,7 @@ private fun ActiveRecordingListItem(
 @Composable
 private fun RecordingListItem(
     entry: RecordingEntry,
+    audioDenoiseTask: AudioDenoiseTask?,
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onShare: () -> Unit,
@@ -1561,7 +1603,7 @@ private fun RecordingListItem(
         Row(
             modifier = Modifier
                 .padding(10.dp)
-                .height(116.dp),
+                .height(140.dp),
             verticalAlignment = Alignment.Top,
         ) {
             RecordingThumbnail(entry)
@@ -1595,6 +1637,19 @@ private fun RecordingListItem(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (entry.audioEnabled) {
+                        Text(
+                            "降噪：${audioDenoiseTask.statusLabel()}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = when (audioDenoiseTask?.status) {
+                                AudioDenoiseStatus.Completed -> MaterialTheme.colorScheme.secondary
+                                AudioDenoiseStatus.Failed -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.tertiary
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                     if (entry.exported) {
                         Text(
                             "已导出到 Movies/DashCam",
@@ -1672,13 +1727,16 @@ private fun RecordingThumbnail(
 private fun VideoPlaybackScreen(
     entry: RecordingEntry,
     entries: List<RecordingEntry>,
+    audioDenoiseTasks: Map<String, AudioDenoiseTask>,
     onDismiss: () -> Unit,
     onShare: (RecordingEntry) -> Unit,
     onExport: (RecordingEntry) -> Unit,
+    onRequestDenoise: (RecordingEntry, Boolean) -> Unit,
     playbackPreferencesStore: PlaybackPreferencesStore,
 ) {
     val context = LocalContext.current
     val activity = context.findActivity()
+    val audioDenoiseManager = remember { AudioDenoiseManager.get(context) }
     val player = remember {
         ExoPlayer.Builder(context).build().apply {
             playWhenReady = true
@@ -1700,6 +1758,13 @@ private fun VideoPlaybackScreen(
     }
 
     BackHandler(onBack = onDismiss)
+
+    DisposableEffect(audioDenoiseManager) {
+        audioDenoiseManager.setPlaybackActive(true)
+        onDispose {
+            audioDenoiseManager.setPlaybackActive(false)
+        }
+    }
 
     DisposableEffect(activity, isCurrentVideoHdr) {
         val window = activity?.window
@@ -1807,9 +1872,11 @@ private fun VideoPlaybackScreen(
             )
             VideoPlaybackTopBar(
                 entry = currentEntry,
+                audioDenoiseTask = audioDenoiseTasks[currentEntry.id],
                 onDismiss = onDismiss,
                 onShare = { onShare(currentEntry) },
                 onExport = { onExport(currentEntry) },
+                onRequestDenoise = { force -> onRequestDenoise(currentEntry, force) },
                 modifier = Modifier.align(Alignment.TopCenter),
             )
             VideoPlaybackControls(
@@ -1848,12 +1915,26 @@ private fun VideoPlaybackScreen(
 @Composable
 private fun VideoPlaybackTopBar(
     entry: RecordingEntry,
+    audioDenoiseTask: AudioDenoiseTask?,
     onDismiss: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
+    onRequestDenoise: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    var showDenoiseDialog by remember { mutableStateOf(false) }
+    if (showDenoiseDialog) {
+        AudioDenoiseDialog(
+            entry = entry,
+            task = audioDenoiseTask,
+            onDismiss = { showDenoiseDialog = false },
+            onConfirm = { force ->
+                showDenoiseDialog = false
+                onRequestDenoise(force)
+            },
+        )
+    }
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -1891,6 +1972,27 @@ private fun VideoPlaybackTopBar(
                 onDismissRequest = { showMenu = false },
             ) {
                 DropdownMenuItem(
+                    text = {
+                        Text(
+                            if (
+                                audioDenoiseTask?.status == AudioDenoiseStatus.Completed &&
+                                audioDenoiseTask.processorVersion >= CURRENT_AUDIO_DENOISE_VERSION
+                            ) {
+                                "已降噪"
+                            } else if (audioDenoiseTask?.status == AudioDenoiseStatus.Completed) {
+                                "升级降噪"
+                            } else {
+                                "降噪"
+                            },
+                        )
+                    },
+                    leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null) },
+                    onClick = {
+                        showMenu = false
+                        showDenoiseDialog = true
+                    },
+                )
+                DropdownMenuItem(
                     text = { Text("导出") },
                     leadingIcon = { Icon(Icons.Filled.FileUpload, contentDescription = null) },
                     onClick = {
@@ -1909,6 +2011,88 @@ private fun VideoPlaybackTopBar(
             }
         }
     }
+}
+
+@Composable
+private fun AudioDenoiseDialog(
+    entry: RecordingEntry,
+    task: AudioDenoiseTask?,
+    onDismiss: () -> Unit,
+    onConfirm: (Boolean) -> Unit,
+) {
+    val status = task?.status
+    val upgradeAvailable = status == AudioDenoiseStatus.Completed &&
+        task.processorVersion < CURRENT_AUDIO_DENOISE_VERSION
+    val title = when (status) {
+        AudioDenoiseStatus.Completed -> if (upgradeAvailable) "可升级新版降噪" else "已完成降噪"
+        AudioDenoiseStatus.Pending -> "已在降噪队列中"
+        AudioDenoiseStatus.Analyzing -> "正在分析噪声"
+        AudioDenoiseStatus.Processing -> "正在降噪"
+        AudioDenoiseStatus.SkippedClean -> "背景安静，已保留原声"
+        AudioDenoiseStatus.SkippedUncertain -> "声音特征不确定"
+        AudioDenoiseStatus.Paused -> "降噪已暂停"
+        AudioDenoiseStatus.Failed -> "降噪失败"
+        null -> "视频降噪"
+    }
+    val description = when {
+        !entry.audioEnabled -> "这个视频没有音轨，无法进行降噪。"
+        status == null -> {
+            "降噪会先分析安静场景、人声和场景声，仅对明确的持续风噪、低频共振和高频宽带噪声处理。" +
+                "任务只在 App 可见、屏幕亮起、停止录制且没有播放视频时运行。"
+        }
+        status == AudioDenoiseStatus.Pending ->
+            "任务已加入队列，不会重复创建。满足前台、亮屏、停止录制和未播放视频的条件后会自动开始。"
+        status == AudioDenoiseStatus.Analyzing ->
+            "正在判断该视频应当降噪、保留原声还是因特征不确定而跳过。切到后台或息屏会立即暂停。"
+        status == AudioDenoiseStatus.Processing ->
+            "正在处理音轨${task.progress?.let { "，当前进度 $it%" }.orEmpty()}。原视频会保留到新文件校验成功后再替换。"
+        status == AudioDenoiseStatus.Completed && upgradeAvailable ->
+            "该视频由旧版算法处理。新版会额外识别大音量、重复、刺耳的机械异响，按出现时间和频带动态压低。原视频仍会保留到新版输出校验成功后再替换。"
+        status == AudioDenoiseStatus.Completed ->
+            "该视频已经使用当前版本完成降噪，不会重复处理。${task.detail.orEmpty()}"
+        status == AudioDenoiseStatus.SkippedClean ->
+            "自动分析认为背景安静，因此没有修改视频。${task.detail.orEmpty()} 如仍确认需要处理，可以手动强制加入队列。"
+        status == AudioDenoiseStatus.SkippedUncertain ->
+            "为避免误伤人声和场景声，自动任务保留了原声。${task.detail.orEmpty()} 如仍确认需要处理，可以手动强制加入队列。"
+        status == AudioDenoiseStatus.Paused ->
+            "${task.detail.orEmpty()} 返回 App、亮屏、停止录制并退出视频播放后会自动恢复，队列中不会产生重复任务。"
+        else -> "${task.detail.orEmpty()} 可以重新加入队列，原视频没有被替换。"
+    }
+    val confirm = when {
+        !entry.audioEnabled -> null
+        status == null -> "加入队列" to false
+        status == AudioDenoiseStatus.SkippedClean || status == AudioDenoiseStatus.SkippedUncertain -> {
+            "仍要降噪" to true
+        }
+        status == AudioDenoiseStatus.Failed -> "重新尝试" to false
+        upgradeAvailable -> "使用新版重新降噪" to false
+        else -> null
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(description) },
+        confirmButton = {
+            if (confirm != null) {
+                TextButton(onClick = { onConfirm(confirm.second) }) {
+                    Text(confirm.first)
+                }
+            } else {
+                TextButton(onClick = onDismiss) {
+                    Text("知道了")
+                }
+            }
+        },
+        dismissButton = if (confirm != null) {
+            {
+                TextButton(onClick = onDismiss) {
+                    Text("取消")
+                }
+            }
+        } else {
+            null
+        },
+    )
 }
 
 @Composable
