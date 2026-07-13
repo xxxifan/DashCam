@@ -49,7 +49,9 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -274,6 +276,7 @@ private fun DashCamApp(
         var showConfirm by remember { mutableStateOf(false) }
         var showBackConfirmDialog by remember { mutableStateOf(false) }
         var showBatteryOptimizationPrompt by remember { mutableStateOf(false) }
+        val libraryListState = rememberLazyListState()
         val shouldShowConfirmAfterPermission = consumePermissionResult()
         val hdrWindowEnabled = playbackEntry == null &&
             selectedTab == 0 &&
@@ -587,6 +590,7 @@ private fun DashCamApp(
                     )
                     1 -> LibraryScreen(
                         padding = padding,
+                        listState = libraryListState,
                         entries = entries,
                         audioDenoiseTasks = audioDenoiseTasks,
                         recordingState = uiState,
@@ -1367,6 +1371,7 @@ private enum class CleanupRetentionOption(
 @Composable
 private fun LibraryScreen(
     padding: PaddingValues,
+    listState: LazyListState,
     entries: List<RecordingEntry>,
     audioDenoiseTasks: Map<String, AudioDenoiseTask>,
     recordingState: RecordingUiState,
@@ -1418,6 +1423,7 @@ private fun LibraryScreen(
 
     val grouped = entries.groupBy { it.dateHeader() }
     LazyColumn(
+        state = listState,
         modifier = Modifier
             .padding(padding)
             .fillMaxSize(),
