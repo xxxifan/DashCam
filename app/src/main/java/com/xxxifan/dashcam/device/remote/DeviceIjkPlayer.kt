@@ -31,6 +31,9 @@ internal fun DevicePlayer(
     showControls: Boolean,
     onError: (Throwable) -> Unit,
     onDiagnostic: (String, Map<String, Any?>) -> Unit,
+    modifier: Modifier = Modifier
+        .fillMaxWidth()
+        .height(220.dp),
 ) {
     key(source.uri) {
         val playerHolder = remember { arrayOfNulls<DiagnosticGSYVideoPlayer>(1) }
@@ -45,9 +48,7 @@ internal fun DevicePlayer(
         }
 
         Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(220.dp),
+            modifier = modifier,
             contentAlignment = Alignment.Center,
         ) {
             AndroidView(

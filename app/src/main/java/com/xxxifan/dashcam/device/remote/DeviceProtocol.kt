@@ -16,6 +16,8 @@ interface DeviceProtocolDriver {
 interface DeviceSession {
     val device: DeviceDefinition
     val supportedCategories: Set<RemoteMediaCategory>
+    val settingsSupport: DeviceSettingsSupport
+        get() = DeviceSettingsSupport.Unsupported
 
     suspend fun preparePreview(): DevicePlaybackSource
 

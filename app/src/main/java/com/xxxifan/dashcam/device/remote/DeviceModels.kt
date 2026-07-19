@@ -10,12 +10,80 @@ enum class DeviceProbeStatus {
     NotIntegrated,
 }
 
-data class DeviceDefinition(
-    val id: String,
+enum class DeviceConnectionMethod {
+    Legacy,
+    VendorSdk,
+}
+
+enum class DeviceModel(
+    val ssidPrefix: String,
+    val driverId: String,
     val displayName: String,
     val protocolName: String,
     val host: String,
+    val connectionMethod: DeviceConnectionMethod,
+) {
+    Dc1(
+        ssidPrefix = "DC1",
+        driverId = "legacy-192-168-169-1",
+        displayName = "DC1 记录仪",
+        protocolName = "JSON / HTTP / RTSP TCP",
+        host = "192.168.169.1",
+        connectionMethod = DeviceConnectionMethod.Legacy,
+    ),
+    Dc5(
+        ssidPrefix = "DC5",
+        driverId = "legacy-192-168-1-254",
+        displayName = "DC5 记录仪",
+        protocolName = "Novatek XML / HTTP / RTSP",
+        host = "192.168.1.254",
+        connectionMethod = DeviceConnectionMethod.Legacy,
+    ),
+    ;
+
+    val definition: DeviceDefinition
+        get() = DeviceDefinition(this)
+
+    companion object {
+        val supported = entries.toList()
+
+        fun fromSsid(ssid: String): DeviceModel? {
+            val normalized = ssid.trim().uppercase()
+            return supported.firstOrNull { normalized.startsWith(it.ssidPrefix) }
+        }
+    }
+}
+
+data class DeviceDefinition(
+    val model: DeviceModel,
+) {
+    val id: String get() = model.driverId
+    val displayName: String get() = model.displayName
+    val protocolName: String get() = model.protocolName
+    val host: String get() = model.host
+    val connectionMethod: DeviceConnectionMethod get() = model.connectionMethod
+}
+
+data class RememberedDevice(
+    val ssid: String?,
+    val driverId: String,
+    val connectionMethod: DeviceConnectionMethod,
 )
+
+data class DeviceWifiNetwork(
+    val ssid: String,
+    val bssid: String,
+    val signalLevel: Int,
+    val model: DeviceModel,
+    val security: DeviceWifiSecurity,
+    val isCurrent: Boolean,
+)
+
+enum class DeviceWifiSecurity {
+    Open,
+    Wpa2,
+    Wpa3,
+}
 
 data class DeviceProbeResult(
     val device: DeviceDefinition,
@@ -105,6 +173,20 @@ data class DeviceStorageInfo(
         get() = (totalBytes - freeBytes).coerceAtLeast(0L)
 }
 
+data class DeviceSettingsSupport(
+    val canRead: Boolean,
+    val canWrite: Boolean,
+    val description: String,
+) {
+    companion object {
+        val Unsupported = DeviceSettingsSupport(
+            canRead = false,
+            canWrite = false,
+            description = "当前设备驱动未提供可靠的固件参数读写能力",
+        )
+    }
+}
+
 data class DeviceUiState(
     val isProbing: Boolean = false,
     val probeTrigger: String? = null,
@@ -115,18 +197,23 @@ data class DeviceUiState(
         detail = "应用尚未集成 iCatch SDK，无法判断当前设备是否支持新款协议",
     ),
     val activeDevice: DeviceDefinition? = null,
+    val rememberedDevice: RememberedDevice? = null,
     val isBusy: Boolean = false,
     val statusMessage: String = "等待探测设备",
     val previewSource: DevicePlaybackSource? = null,
     val selectedCategory: RemoteMediaCategory = RemoteMediaCategory.NormalVideo,
     val remoteMedia: List<RemoteDeviceMedia> = emptyList(),
     val storageInfo: DeviceStorageInfo? = null,
+    val settingsSupport: DeviceSettingsSupport = DeviceSettingsSupport.Unsupported,
+    val supportedCategories: Set<RemoteMediaCategory> = emptySet(),
     val playbackMedia: RemoteDeviceMedia? = null,
     val downloadProgress: DeviceDownloadProgress? = null,
     val downloadedMedia: DownloadedDeviceMedia? = null,
     val diagnostics: List<DeviceDiagnosticRecord> = emptyList(),
     val diagnosticFile: File? = null,
 )
+
+internal fun String.deviceModelOrNull(): DeviceModel? = DeviceModel.fromSsid(this)
 
 internal fun String.toRemoteMediaFormat(): RemoteMediaFormat =
     when (substringAfterLast('.', missingDelimiterValue = "").lowercase()) {

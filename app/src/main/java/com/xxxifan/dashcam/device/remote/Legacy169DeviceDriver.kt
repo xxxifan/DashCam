@@ -17,12 +17,7 @@ import java.util.UUID
 import kotlin.system.measureTimeMillis
 
 class Legacy169DeviceDriver : DeviceProtocolDriver {
-    override val definition = DeviceDefinition(
-        id = "legacy-192-168-169-1",
-        displayName = "旧款记录仪 192.168.169.1",
-        protocolName = "JSON / HTTP / RTSP TCP",
-        host = HOST,
-    )
+    override val definition = DeviceModel.Dc1.definition
 
     override suspend fun probe(route: DeviceNetworkRoute): DeviceProbeResult {
         val client = DeviceHttpClient(route)
@@ -303,9 +298,9 @@ class Legacy169DeviceDriver : DeviceProtocolDriver {
     }
 
     companion object {
-        private const val HOST = "192.168.169.1"
-        private const val BASE_URL = "http://$HOST"
-        private const val HEARTBEAT_URL = "$BASE_URL/app/getparamvalue?param=rec"
+        private val HOST = DeviceModel.Dc1.host
+        private val BASE_URL = "http://$HOST"
+        private val HEARTBEAT_URL = "$BASE_URL/app/getparamvalue?param=rec"
         private const val HEARTBEAT_INTERVAL_MILLIS = 4_000L
     }
 }

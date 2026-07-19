@@ -1,12 +1,18 @@
 package com.xxxifan.dashcam.device.remote
 
-import android.content.Context
-import android.content.Intent
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -15,43 +21,58 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.AssistChip
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xxxifan.dashcam.data.formatBytes
 import kotlinx.coroutines.launch
-import java.io.File
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+
+private enum class DevicePage(val label: String) {
+    Live("预览"),
+    Files("文件"),
+    Settings("设置"),
+}
 
 @Composable
 fun DeviceScreen(
@@ -61,142 +82,251 @@ fun DeviceScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val state by manager.state.collectAsStateWithLifecycle()
+    var page by remember { mutableStateOf(DevicePage.Live) }
+    var showDevicePicker by remember { mutableStateOf(state.activeDevice == null) }
+    var wifiNetworks by remember { mutableStateOf<List<DeviceWifiNetwork>>(emptyList()) }
+    var scanMessage by remember { mutableStateOf("正在查找记录仪…") }
+    var isScanning by remember { mutableStateOf(false) }
+    var scanAfterPermission by remember { mutableStateOf(false) }
+    var passwordDevice by remember { mutableStateOf<DeviceWifiNetwork?>(null) }
+
+    suspend fun scanWifi() {
+        isScanning = true
+        val result = manager.scanWifi()
+        wifiNetworks = result.networks
+        scanMessage = result.message
+        isScanning = false
+    }
+
+    val scanPermissions = arrayOf(
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.NEARBY_WIFI_DEVICES,
+    )
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        manager.reportWifiScanPermission(result)
+        if (scanAfterPermission) {
+            scanAfterPermission = false
+            scope.launch { scanWifi() }
+        }
+    }
+    val requestScan: () -> Unit = {
+        val missing = scanPermissions.filter { permission ->
+            ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            scope.launch { scanWifi() }
+        } else {
+            scanAfterPermission = true
+            permissionLauncher.launch(missing.toTypedArray())
+        }
+    }
 
     LaunchedEffect(manager) {
         manager.probeAll(trigger = "device_tab_opened")
     }
-    DisposableEffect(manager) {
-        onDispose { manager.closeActiveAsync() }
+    LaunchedEffect(Unit) {
+        if (scanPermissions.all { permission ->
+                ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+            }
+        ) {
+            scanWifi()
+        } else {
+            scanMessage = "允许附近 Wi-Fi 权限后可发现记录仪"
+        }
+    }
+    LaunchedEffect(state.activeDevice?.id) {
+        if (state.activeDevice != null) {
+            showDevicePicker = false
+            page = DevicePage.Live
+        }
+    }
+    LaunchedEffect(
+        page,
+        state.activeDevice?.id,
+        showDevicePicker,
+        state.playbackMedia?.id,
+        state.previewSource?.uri,
+    ) {
+        if (
+            page == DevicePage.Live &&
+            state.activeDevice != null &&
+            !showDevicePicker &&
+            state.previewSource == null &&
+            state.playbackMedia == null &&
+            !state.isBusy
+        ) {
+            manager.startPreview()
+        }
     }
 
-    LazyColumn(
-        modifier = Modifier.padding(padding),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            DeviceStatusCard(
-                state = state,
-                onProbe = { scope.launch { manager.probeAll() } },
+    if (state.activeDevice == null || showDevicePicker) {
+        passwordDevice?.let { device ->
+            WifiPasswordDialog(
+                deviceName = device.ssid,
+                onDismiss = { passwordDevice = null },
+                onConnect = { passphrase ->
+                    passwordDevice = null
+                    scope.launch { manager.connectWifi(device, passphrase) }
+                },
             )
         }
-
-        item {
-            NewSdkStatusCard(state.newSdkSupport)
-        }
-
-        items(state.probeResults, key = { it.device.id }) { result ->
-            ProbeResultCard(
-                result = result,
-                selected = state.activeDevice?.id == result.device.id,
-                enabled = !state.isBusy && result.status == DeviceProbeStatus.Supported,
-                onSelect = { scope.launch { manager.selectDevice(result.device.id) } },
-            )
-        }
-
-        state.activeDevice?.let { activeDevice ->
-            item {
-                ActiveDeviceControls(
-                    device = activeDevice,
-                    state = state,
-                    onPreview = { scope.launch { manager.startPreview() } },
-                    onLoadMedia = { category -> scope.launch { manager.loadRemoteMedia(category) } },
-                    onDisconnect = { scope.launch { manager.closeActive() } },
-                )
-            }
-        }
-
-        val playerSource = state.playbackMedia?.playbackSource ?: state.previewSource
-        if (playerSource != null) {
-            item {
-                DevicePlayerCard(
-                    title = state.playbackMedia?.name ?: "实时预览",
-                    source = playerSource,
-                    showControls = state.playbackMedia != null,
-                    onClose = { scope.launch { manager.stopPlayer() } },
-                    onError = { manager.reportPlaybackError(playerSource, it) },
-                    onDiagnostic = { event, fields ->
-                        manager.reportPlaybackDiagnostic(playerSource, event, fields)
-                    },
-                )
-            }
-        }
-
-        if (state.remoteMedia.isNotEmpty()) {
-            item {
-                Text(
-                    text = "${state.selectedCategory.displayName} · ${state.remoteMedia.size}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            items(state.remoteMedia, key = { it.id }) { media ->
-                RemoteMediaCard(
-                    media = media,
-                    isDownloading = state.downloadProgress?.mediaId == media.id,
-                    progress = state.downloadProgress?.takeIf { it.mediaId == media.id },
-                    enabled = !state.isBusy,
-                    onPlay = { manager.play(media) },
-                    onDownload = { scope.launch { manager.download(media) } },
-                )
-            }
-        }
-
-        state.downloadedMedia?.let { downloaded ->
-            item {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Text("下载完成", fontWeight = FontWeight.SemiBold)
-                        Text(downloaded.file.absolutePath, style = MaterialTheme.typography.bodySmall)
-                        Text(downloaded.postProcessingDescription, style = MaterialTheme.typography.bodySmall)
+        DevicePicker(
+            padding = padding,
+            state = state,
+            networks = wifiNetworks,
+            scanMessage = scanMessage,
+            isScanning = isScanning || state.isProbing,
+            onScan = requestScan,
+            onConnectCurrent = { scope.launch { manager.probeAll(trigger = "user_connect") } },
+            onConnectNetwork = { network ->
+                when {
+                    network.isCurrent -> scope.launch {
+                        manager.probeAll(trigger = "user_connect")
                     }
+                    network.security == DeviceWifiSecurity.Open -> scope.launch {
+                        manager.connectWifi(network, null)
+                    }
+                    else -> passwordDevice = network
                 }
-            }
-        }
+            },
+            onForget = { scope.launch { manager.forgetDevice() } },
+            onBackToDevice = { showDevicePicker = false },
+        )
+        return
+    }
 
-        item {
-            DiagnosticsCard(
-                file = state.diagnosticFile,
-                records = state.diagnostics,
-                onShare = { file -> context.shareDeviceDiagnostics(file) },
+    Column(
+        modifier = Modifier
+            .padding(padding)
+            .fillMaxSize(),
+    ) {
+        ConnectedDeviceHeader(
+            state = state,
+            page = page,
+            onPageChange = { destination ->
+                page = destination
+                scope.launch { manager.stopPlayer() }
+            },
+            onChangeDevice = {
+                showDevicePicker = true
+                scope.launch { manager.closeActive() }
+            },
+        )
+        when (page) {
+            DevicePage.Live -> LivePreviewPage(
+                state = state,
+                onRetry = {
+                    scope.launch {
+                        manager.stopPlayer()
+                        manager.startPreview()
+                    }
+                },
+                onError = { source, error -> manager.reportPlaybackError(source, error) },
+                onDiagnostic = { source, event, fields ->
+                    manager.reportPlaybackDiagnostic(source, event, fields)
+                },
+            )
+
+            DevicePage.Files -> DeviceFilesPage(
+                state = state,
+                manager = manager,
+            )
+
+            DevicePage.Settings -> DeviceSettingsPage(
+                state = state,
+                onDisconnect = { scope.launch { manager.closeActive() } },
+                onForget = { scope.launch { manager.forgetDevice() } },
             )
         }
     }
 }
 
 @Composable
-private fun DeviceStatusCard(
+private fun DevicePicker(
+    padding: PaddingValues,
     state: DeviceUiState,
-    onProbe: () -> Unit,
+    networks: List<DeviceWifiNetwork>,
+    scanMessage: String,
+    isScanning: Boolean,
+    onScan: () -> Unit,
+    onConnectCurrent: () -> Unit,
+    onConnectNetwork: (DeviceWifiNetwork) -> Unit,
+    onForget: () -> Unit,
+    onBackToDevice: () -> Unit,
 ) {
-    Card {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
+    LazyColumn(
+        modifier = Modifier.padding(padding),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("设备协议探测", style = MaterialTheme.typography.titleLarge)
-                    Text(state.statusMessage, style = MaterialTheme.typography.bodyMedium)
+                    Text("连接记录仪", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        "选择附近的记录仪热点",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                if (state.isProbing) {
-                    CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
-                } else {
-                    OutlinedButton(onClick = onProbe) {
-                        Icon(Icons.Filled.Refresh, contentDescription = null)
-                        Text("重新探测")
+                if (state.activeDevice != null) {
+                    TextButton(onClick = onBackToDevice) { Text("返回") }
+                }
+            }
+        }
+
+        state.rememberedDevice?.let { remembered ->
+            item {
+                RememberedDeviceCard(
+                    remembered = remembered,
+                    isBusy = state.isProbing,
+                    onReconnect = onConnectCurrent,
+                    onForget = onForget,
+                )
+            }
+        }
+
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("附近设备", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                IconButton(onClick = onScan, enabled = !isScanning) {
+                    if (isScanning) {
+                        CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Filled.Refresh, contentDescription = "重新扫描")
                     }
                 }
             }
+        }
+
+        items(networks, key = { "${it.ssid}-${it.bssid}" }) { network ->
+            WifiDeviceCard(
+                network = network,
+                onConnect = { onConnectNetwork(network) },
+            )
+        }
+
+        if (networks.isEmpty()) {
+            item {
+                EmptyWifiState(
+                    message = scanMessage,
+                    onScan = onScan,
+                )
+            }
+        }
+
+        item {
             Text(
-                "请先连接记录仪热点。探测固定走 Wi-Fi Network，避免 Android 把局域网请求发到移动网络。",
+                state.statusMessage,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -205,295 +335,567 @@ private fun DeviceStatusCard(
 }
 
 @Composable
-private fun NewSdkStatusCard(status: NewSdkSupportStatus) {
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = if (status.integrationAvailable) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            },
-        ),
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text("新款 iCatch SDK", fontWeight = FontWeight.SemiBold)
-            Text(
-                if (status.integrationAvailable) "SDK 已集成" else "SDK 未集成",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Text(status.detail, style = MaterialTheme.typography.bodySmall)
-        }
-    }
-}
-
-@Composable
-private fun ProbeResultCard(
-    result: DeviceProbeResult,
-    selected: Boolean,
-    enabled: Boolean,
-    onSelect: () -> Unit,
+private fun RememberedDeviceCard(
+    remembered: RememberedDevice,
+    isBusy: Boolean,
+    onReconnect: () -> Unit,
+    onForget: () -> Unit,
 ) {
     Card(
-        colors = CardDefaults.cardColors(
-            containerColor = if (selected) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.surface
-            },
-        ),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(result.detectedName ?: result.device.displayName, fontWeight = FontWeight.SemiBold)
-                    Text(result.device.protocolName, style = MaterialTheme.typography.bodySmall)
-                }
-                AssistChip(
-                    onClick = {},
-                    label = { Text(result.status.label()) },
-                )
-            }
-            Text(result.detail, style = MaterialTheme.typography.bodySmall)
-            result.latencyMillis?.let { Text("响应 ${it} ms", style = MaterialTheme.typography.labelSmall) }
-            if (result.status == DeviceProbeStatus.Supported) {
-                Button(onClick = onSelect, enabled = enabled && !selected) {
-                    Text(if (selected) "已连接" else "连接设备")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ActiveDeviceControls(
-    device: DeviceDefinition,
-    state: DeviceUiState,
-    onPreview: () -> Unit,
-    onLoadMedia: (RemoteMediaCategory) -> Unit,
-    onDisconnect: () -> Unit,
-) {
-    Card {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(device.displayName, style = MaterialTheme.typography.titleMedium)
-            Button(
-                onClick = onPreview,
-                enabled = !state.isBusy,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                Text("实时预览")
-            }
-            Text(
-                "读取存储会按该设备协议停止录像并切换回放模式。",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                RemoteMediaCategory.entries.forEach { category ->
-                    FilterChip(
-                        selected = state.selectedCategory == category && state.remoteMedia.isNotEmpty(),
-                        onClick = { onLoadMedia(category) },
-                        enabled = !state.isBusy,
-                        label = { Text(category.displayName) },
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.CheckCircle, contentDescription = null)
+                Spacer(Modifier.size(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(remembered.ssid ?: "上次连接的记录仪", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "将优先使用 ${remembered.connectionMethod.displayName()} 连接",
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
             }
-            OutlinedButton(onClick = onDisconnect, enabled = !state.isBusy) {
-                Icon(Icons.Filled.Stop, contentDescription = null)
-                Text("断开")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onReconnect, enabled = !isBusy) { Text("重新连接") }
+                TextButton(onClick = onForget, enabled = !isBusy) { Text("忘记设备") }
             }
         }
     }
 }
 
 @Composable
-private fun RemoteMediaCard(
+private fun WifiDeviceCard(
+    network: DeviceWifiNetwork,
+    onConnect: () -> Unit,
+) {
+    Card(shape = RoundedCornerShape(8.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Wifi,
+                contentDescription = null,
+                tint = signalColor(network.signalLevel),
+                modifier = Modifier.size(28.dp),
+            )
+            Spacer(Modifier.size(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(network.ssid, fontWeight = FontWeight.SemiBold)
+                Text(
+                    when {
+                        network.isCurrent -> "当前 Wi-Fi"
+                        network.security == DeviceWifiSecurity.Open -> "可直接连接"
+                        else -> "需要密码"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Button(onClick = onConnect) {
+                Text(if (network.isCurrent) "连接" else "前往连接")
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyWifiState(
+    message: String,
+    onScan: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            Icons.Filled.Wifi,
+            contentDescription = null,
+            modifier = Modifier.size(42.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        OutlinedButton(onClick = onScan) {
+            Icon(Icons.Filled.Refresh, contentDescription = null)
+            Text("重新扫描")
+        }
+    }
+}
+
+@Composable
+private fun WifiPasswordDialog(
+    deviceName: String,
+    onDismiss: () -> Unit,
+    onConnect: (String) -> Unit,
+) {
+    var passphrase by remember(deviceName) { mutableStateOf("") }
+    val isValid = passphrase.length in 8..63
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("连接 $deviceName") },
+        text = {
+            OutlinedTextField(
+                value = passphrase,
+                onValueChange = { passphrase = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Wi-Fi 密码") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConnect(passphrase) },
+                enabled = isValid,
+            ) {
+                Text("连接")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
+}
+
+@Composable
+private fun ConnectedDeviceHeader(
+    state: DeviceUiState,
+    page: DevicePage,
+    onPageChange: (DevicePage) -> Unit,
+    onChangeDevice: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .background(Color(0xFF16A34A), RoundedCornerShape(5.dp)),
+            )
+            Spacer(Modifier.size(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    state.rememberedDevice?.ssid ?: state.activeDevice?.displayName.orEmpty(),
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text("已连接", style = MaterialTheme.typography.bodySmall, color = Color(0xFF15803D))
+            }
+            TextButton(onClick = onChangeDevice) { Text("更换设备") }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            DevicePage.entries.forEach { destination ->
+                FilterChip(
+                    selected = page == destination,
+                    onClick = { onPageChange(destination) },
+                    label = { Text(destination.label) },
+                    leadingIcon = {
+                        Icon(
+                            when (destination) {
+                                DevicePage.Live -> Icons.Filled.Videocam
+                                DevicePage.Files -> Icons.Filled.Folder
+                                DevicePage.Settings -> Icons.Filled.Settings
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LivePreviewPage(
+    state: DeviceUiState,
+    onRetry: () -> Unit,
+    onError: (DevicePlaybackSource, Throwable) -> Unit,
+    onDiagnostic: (DevicePlaybackSource, String, Map<String, Any?>) -> Unit,
+) {
+    Column(
+        modifier = Modifier.padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        val source = state.previewSource
+        Card(shape = RoundedCornerShape(8.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (source != null) {
+                    DevicePlayer(
+                        source = source,
+                        showControls = false,
+                        onError = { onError(source, it) },
+                        onDiagnostic = { event, fields -> onDiagnostic(source, event, fields) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else if (state.isBusy) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = Color.White)
+                        Spacer(Modifier.height(12.dp))
+                        Text("正在连接实时画面", color = Color.White)
+                    }
+                } else {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Filled.Warning, contentDescription = null, tint = Color.White)
+                        Spacer(Modifier.height(8.dp))
+                        Text("实时画面暂不可用", color = Color.White)
+                    }
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("实时预览", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    state.statusMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedButton(onClick = onRetry, enabled = !state.isBusy) {
+                Icon(Icons.Filled.Refresh, contentDescription = null)
+                Text("重连")
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeviceFilesPage(
+    state: DeviceUiState,
+    manager: DeviceManager,
+) {
+    val scope = rememberCoroutineScope()
+    val supportedCategories = state.supportedCategories
+        .ifEmpty { RemoteMediaCategory.entries.toSet() }
+    var selectedCategory by remember(state.activeDevice?.id) {
+        mutableStateOf(
+            RemoteMediaCategory.NormalVideo.takeIf { it in supportedCategories }
+                ?: supportedCategories.first(),
+        )
+    }
+
+    LaunchedEffect(supportedCategories) {
+        if (selectedCategory !in supportedCategories) {
+            selectedCategory = supportedCategories.first()
+        }
+    }
+    LaunchedEffect(selectedCategory, state.activeDevice?.id) {
+        manager.loadRemoteMedia(selectedCategory)
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Text("设备文件", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        }
+        state.playbackMedia?.let { media ->
+            item(key = "player-${media.id}") {
+                Card(shape = RoundedCornerShape(8.dp)) {
+                    Column {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                media.name,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            TextButton(onClick = { scope.launch { manager.stopPlayer() } }) {
+                                Text("关闭")
+                            }
+                        }
+                        DevicePlayer(
+                            source = media.playbackSource,
+                            showControls = true,
+                            onError = { manager.reportPlaybackError(media.playbackSource, it) },
+                            onDiagnostic = { event, fields ->
+                                manager.reportPlaybackDiagnostic(media.playbackSource, event, fields)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(16f / 9f),
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                supportedCategories.forEach { category ->
+                    FilterChip(
+                        selected = selectedCategory == category,
+                        onClick = { selectedCategory = category },
+                        label = { Text(category.shortName()) },
+                    )
+                }
+            }
+        }
+        if (state.isBusy && state.remoteMedia.isEmpty()) {
+            item { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
+        }
+        if (!state.isBusy && state.remoteMedia.isEmpty()) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 36.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(
+                        if (selectedCategory == RemoteMediaCategory.Photo) {
+                            Icons.Filled.Image
+                        } else {
+                            Icons.Filled.Movie
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(42.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text("没有${selectedCategory.displayName}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        items(state.remoteMedia, key = { it.id }) { media ->
+            RemoteMediaItem(
+                media = media,
+                progress = state.downloadProgress?.takeIf { it.mediaId == media.id },
+                enabled = !state.isBusy,
+                onPlay = { manager.play(media) },
+                onDownload = { scope.launch { manager.download(media) } },
+            )
+        }
+        state.downloadedMedia?.let { downloaded ->
+            item {
+                Text(
+                    "已保存 ${downloaded.file.name}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF15803D),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RemoteMediaItem(
     media: RemoteDeviceMedia,
-    isDownloading: Boolean,
     progress: DeviceDownloadProgress?,
     enabled: Boolean,
     onPlay: () -> Unit,
     onDownload: () -> Unit,
 ) {
-    Card {
+    Card(shape = RoundedCornerShape(8.dp)) {
         Column(
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                media.name,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                fontWeight = FontWeight.Medium,
-            )
-            Text(
-                buildString {
-                    append(media.format.name)
-                    media.sizeBytes?.let { append(" · ${it.formatBytes()}") }
-                    media.durationMillis?.let { append(" · ${it / 1_000L}s") }
-                },
-                style = MaterialTheme.typography.bodySmall,
-            )
-            if (isDownloading) {
-                progress?.fraction?.let { fraction ->
-                    LinearProgressIndicator(
-                        progress = { fraction },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                } ?: LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                Text(
-                    progress?.downloadedBytes?.formatBytes().orEmpty(),
-                    style = MaterialTheme.typography.labelSmall,
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    if (media.format == RemoteMediaFormat.Jpeg) Icons.Filled.Image else Icons.Filled.Movie,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
                 )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (media.format != RemoteMediaFormat.Jpeg) {
-                    OutlinedButton(onClick = onPlay, enabled = enabled) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                        Text("播放")
-                    }
-                }
-                Button(onClick = onDownload, enabled = enabled) {
-                    Icon(Icons.Filled.Download, contentDescription = null)
-                    Text("下载")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DevicePlayerCard(
-    title: String,
-    source: DevicePlaybackSource,
-    showControls: Boolean,
-    onClose: () -> Unit,
-    onError: (Throwable) -> Unit,
-    onDiagnostic: (String, Map<String, Any?>) -> Unit,
-) {
-    Card {
-        Column {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = onClose) { Text("关闭") }
-            }
-            DevicePlayer(
-                source = source,
-                showControls = showControls,
-                onError = onError,
-                onDiagnostic = onDiagnostic,
-            )
-        }
-    }
-}
-
-@Composable
-private fun DiagnosticsCard(
-    file: File?,
-    records: List<DeviceDiagnosticRecord>,
-    onShare: (File) -> Unit,
-) {
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("设备诊断文件", style = MaterialTheme.typography.titleMedium)
-                file?.let {
-                    OutlinedButton(onClick = { onShare(it) }) {
-                        Icon(Icons.Filled.Share, contentDescription = null)
-                        Text("分享")
-                    }
-                }
-            }
-            Text(
-                file?.absolutePath ?: "日志文件尚未创建",
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-            )
-            Text(
-                "JSON Lines / UTF-8，保留 30 天；下面显示最近记录。",
-                style = MaterialTheme.typography.labelSmall,
-            )
-            records.take(12).forEachIndexed { index, record ->
-                if (index > 0) {
-                    HorizontalDivider()
-                }
-                Column {
+                Spacer(Modifier.size(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "${record.timestampMillis.diagnosticTime()}  ${record.event}",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                    Text(
-                        record.fields.entries.joinToString(" · ") { "${it.key}=${it.value}" },
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 4,
+                        media.name,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        buildString {
+                            append(media.format.displayName())
+                            media.sizeBytes?.let { append(" · ${it.formatBytes()}") }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                if (media.format != RemoteMediaFormat.Jpeg) {
+                    IconButton(onClick = onPlay, enabled = enabled) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = "播放")
+                    }
+                }
+                IconButton(onClick = onDownload, enabled = enabled) {
+                    Icon(Icons.Filled.CloudDownload, contentDescription = "下载")
+                }
             }
-            if (records.isEmpty()) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("暂无诊断记录", style = MaterialTheme.typography.bodySmall)
+            progress?.let {
+                it.fraction?.let { fraction ->
+                    LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                } ?: LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
         }
     }
 }
 
-private fun DeviceProbeStatus.label(): String = when (this) {
-    DeviceProbeStatus.Supported -> "支持"
-    DeviceProbeStatus.Unsupported -> "协议不匹配"
-    DeviceProbeStatus.Unreachable -> "不可达"
-    DeviceProbeStatus.NotIntegrated -> "未集成"
-}
-
-private fun Long.diagnosticTime(): String =
-    DIAGNOSTIC_TIME_FORMATTER.format(Instant.ofEpochMilli(this))
-
-private fun Context.shareDeviceDiagnostics(file: File) {
-    if (!file.exists()) {
-        return
+@Composable
+private fun DeviceSettingsPage(
+    state: DeviceUiState,
+    onDisconnect: () -> Unit,
+    onForget: () -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Text("记录仪设置", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        }
+        item {
+            Card(shape = RoundedCornerShape(8.dp)) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    SettingValueRow(
+                        "设备",
+                        state.rememberedDevice?.ssid ?: state.activeDevice?.displayName.orEmpty(),
+                    )
+                    HorizontalDivider()
+                    SettingValueRow("产品型号", state.activeDevice?.model?.displayName.orEmpty())
+                    HorizontalDivider()
+                    SettingValueRow(
+                        "连接方式",
+                        state.activeDevice?.connectionMethod?.displayName().orEmpty(),
+                    )
+                    state.storageInfo?.let { storage ->
+                        HorizontalDivider()
+                        Column(modifier = Modifier.padding(vertical = 14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text("存储卡")
+                                Text(
+                                    "可用 ${storage.freeBytes.formatBytes()}",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            LinearProgressIndicator(
+                                progress = {
+                                    if (storage.totalBytes > 0L) {
+                                        storage.usedBytes.toFloat() / storage.totalBytes.toFloat()
+                                    } else {
+                                        0f
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Card(
+                shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text("设备参数", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        state.settingsSupport.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        item {
+            OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
+                Text("断开连接")
+            }
+        }
+        item {
+            TextButton(onClick = onForget, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Filled.DeleteOutline, contentDescription = null)
+                Text("忘记此设备")
+            }
+        }
     }
-    val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-    startActivity(
-        Intent.createChooser(
-            Intent(Intent.ACTION_SEND).apply {
-                type = "application/x-ndjson"
-                putExtra(Intent.EXTRA_STREAM, uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            },
-            "分享设备诊断文件",
-        ),
-    )
 }
 
-private val DIAGNOSTIC_TIME_FORMATTER = DateTimeFormatter
-    .ofPattern("MM-dd HH:mm:ss")
-    .withZone(ZoneId.systemDefault())
+@Composable
+private fun SettingValueRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 14.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label)
+        Text(
+            value,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun DeviceConnectionMethod.displayName(): String = when (this) {
+    DeviceConnectionMethod.Legacy -> "Legacy"
+    DeviceConnectionMethod.VendorSdk -> "厂商 SDK"
+}
+
+private fun RemoteMediaCategory.shortName(): String = when (this) {
+    RemoteMediaCategory.NormalVideo -> "普通视频"
+    RemoteMediaCategory.EmergencyVideo -> "紧急视频"
+    RemoteMediaCategory.Photo -> "照片"
+}
+
+private fun RemoteMediaFormat.displayName(): String = when (this) {
+    RemoteMediaFormat.Mp4 -> "MP4"
+    RemoteMediaFormat.Mov -> "MOV"
+    RemoteMediaFormat.TransportStream -> "TS"
+    RemoteMediaFormat.Jpeg -> "JPEG"
+    RemoteMediaFormat.Unknown -> "文件"
+}
+
+private fun signalColor(rssi: Int): Color = when {
+    rssi >= -55 -> Color(0xFF15803D)
+    rssi >= -72 -> Color(0xFFD97706)
+    else -> Color(0xFF64748B)
+}

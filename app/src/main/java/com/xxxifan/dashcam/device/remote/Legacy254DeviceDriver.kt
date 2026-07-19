@@ -9,12 +9,7 @@ import java.util.UUID
 import kotlin.system.measureTimeMillis
 
 class Legacy254DeviceDriver : DeviceProtocolDriver {
-    override val definition = DeviceDefinition(
-        id = "legacy-192-168-1-254",
-        displayName = "旧款记录仪 192.168.1.254",
-        protocolName = "Novatek XML / HTTP / RTSP",
-        host = HOST,
-    )
+    override val definition = DeviceModel.Dc5.definition
 
     override suspend fun probe(route: DeviceNetworkRoute): DeviceProbeResult {
         val client = DeviceHttpClient(route)
@@ -226,8 +221,8 @@ class Legacy254DeviceDriver : DeviceProtocolDriver {
     }
 
     companion object {
-        private const val HOST = "192.168.1.254"
-        private const val BASE_URL = "http://$HOST"
+        private val HOST = DeviceModel.Dc5.host
+        private val BASE_URL = "http://$HOST"
         private val FILE_TAGS = setOf("NAME", "FPATH", "SIZE", "TIMECODE", "TIME", "ATTR")
 
         private fun parseNamedXmlValues(xml: String): Map<String, String> {
