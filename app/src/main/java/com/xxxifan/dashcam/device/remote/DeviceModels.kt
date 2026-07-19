@@ -97,6 +97,14 @@ data class DeviceDiagnosticRecord(
     val fields: Map<String, String>,
 )
 
+data class DeviceStorageInfo(
+    val totalBytes: Long,
+    val freeBytes: Long,
+) {
+    val usedBytes: Long
+        get() = (totalBytes - freeBytes).coerceAtLeast(0L)
+}
+
 data class DeviceUiState(
     val isProbing: Boolean = false,
     val probeTrigger: String? = null,
@@ -112,6 +120,7 @@ data class DeviceUiState(
     val previewSource: DevicePlaybackSource? = null,
     val selectedCategory: RemoteMediaCategory = RemoteMediaCategory.NormalVideo,
     val remoteMedia: List<RemoteDeviceMedia> = emptyList(),
+    val storageInfo: DeviceStorageInfo? = null,
     val playbackMedia: RemoteDeviceMedia? = null,
     val downloadProgress: DeviceDownloadProgress? = null,
     val downloadedMedia: DownloadedDeviceMedia? = null,

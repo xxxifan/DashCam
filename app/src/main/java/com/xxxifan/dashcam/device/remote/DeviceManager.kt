@@ -6,6 +6,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Environment
+import androidx.media3.common.PlaybackException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -180,13 +181,26 @@ class DeviceManager private constructor(
                 ),
             )
             activeRoute = route
-            activeSession = driver.createSession(route, diagnostics)
+            val session = driver.createSession(route, diagnostics)
+            activeSession = session
+            val storageInfo = runCatching { session.loadStorageInfo() }
+                .onFailure { error ->
+                    diagnostics.log(
+                        "device_storage_info_failed",
+                        mapOf(
+                            "deviceId" to deviceId,
+                            "error" to (error.message ?: error.javaClass.simpleName),
+                        ),
+                    )
+                }
+                .getOrNull()
             _state.update {
                 it.copy(
                     activeDevice = driver.definition,
                     statusMessage = "已连接 ${driver.definition.displayName}",
                     previewSource = null,
                     remoteMedia = emptyList(),
+                    storageInfo = storageInfo,
                     playbackMedia = null,
                     downloadedMedia = null,
                 )
@@ -289,7 +303,27 @@ class DeviceManager private constructor(
                     "source" to source.uri,
                     "sourceType" to source.javaClass.simpleName,
                     "error" to (error.message ?: error.javaClass.simpleName),
+                    "errorType" to error.javaClass.name,
+                    "errorCodeName" to (error as? PlaybackException)?.errorCodeName,
+                    "errorChain" to error.diagnosticCauseChain(),
                 ),
+            )
+        }
+    }
+
+    fun reportPlaybackDiagnostic(
+        source: DevicePlaybackSource,
+        event: String,
+        fields: Map<String, Any?> = emptyMap(),
+    ) {
+        scope.launch {
+            diagnostics.log(
+                event,
+                mapOf(
+                    "deviceId" to _state.value.activeDevice?.id,
+                    "source" to source.uri,
+                    "sourceType" to source.javaClass.simpleName,
+                ) + fields,
             )
         }
     }
@@ -345,6 +379,7 @@ class DeviceManager private constructor(
                 activeDevice = null,
                 previewSource = null,
                 remoteMedia = emptyList(),
+                storageInfo = null,
                 playbackMedia = null,
                 downloadProgress = null,
             )
@@ -408,4 +443,21 @@ class DeviceManager private constructor(
                 ).also { instance = it }
             }
     }
+}
+
+private fun Throwable.diagnosticCauseChain(): String {
+    val causes = mutableListOf<String>()
+    val visited = mutableSetOf<Throwable>()
+    var current: Throwable? = this
+    while (current != null && visited.add(current) && causes.size < 8) {
+        causes += buildString {
+            append(current.javaClass.name)
+            current.message?.takeIf { it.isNotBlank() }?.let { message ->
+                append(": ")
+                append(message)
+            }
+        }
+        current = current.cause
+    }
+    return causes.joinToString(" <- ")
 }

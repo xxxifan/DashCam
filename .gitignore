@@ -34,3 +34,6 @@ google-services.json
 *.hprof
 app/build/
 *.ap_
+
+# Device media collected during diagnostics
+/disk/

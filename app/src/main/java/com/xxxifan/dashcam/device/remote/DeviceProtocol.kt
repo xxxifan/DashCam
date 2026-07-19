@@ -21,6 +21,8 @@ interface DeviceSession {
 
     suspend fun releasePreview()
 
+    suspend fun loadStorageInfo(): DeviceStorageInfo? = null
+
     suspend fun loadRemoteMedia(category: RemoteMediaCategory): List<RemoteDeviceMedia>
 
     suspend fun download(

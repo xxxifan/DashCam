@@ -2,9 +2,7 @@ package com.xxxifan.dashcam.device.remote
 
 import android.content.Context
 import android.content.Intent
-import androidx.annotation.OptIn
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -38,7 +36,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,16 +44,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.rtsp.RtspMediaSource
-import androidx.media3.ui.PlayerView
 import com.xxxifan.dashcam.data.formatBytes
 import kotlinx.coroutines.launch
 import java.io.File
@@ -126,6 +115,9 @@ fun DeviceScreen(
                     showControls = state.playbackMedia != null,
                     onClose = { scope.launch { manager.stopPlayer() } },
                     onError = { manager.reportPlaybackError(playerSource, it) },
+                    onDiagnostic = { event, fields ->
+                        manager.reportPlaybackDiagnostic(playerSource, event, fields)
+                    },
                 )
             }
         }
@@ -389,6 +381,7 @@ private fun DevicePlayerCard(
     showControls: Boolean,
     onClose: () -> Unit,
     onError: (Throwable) -> Unit,
+    onDiagnostic: (String, Map<String, Any?>) -> Unit,
 ) {
     Card {
         Column {
@@ -406,65 +399,9 @@ private fun DevicePlayerCard(
                 source = source,
                 showControls = showControls,
                 onError = onError,
+                onDiagnostic = onDiagnostic,
             )
         }
-    }
-}
-
-@OptIn(UnstableApi::class)
-@Composable
-private fun DevicePlayer(
-    source: DevicePlaybackSource,
-    showControls: Boolean,
-    onError: (Throwable) -> Unit,
-) {
-    val context = LocalContext.current
-    val player = remember(source) {
-        ExoPlayer.Builder(context).build().apply {
-            val mediaItem = MediaItem.fromUri(source.uri)
-            when (source) {
-                is DevicePlaybackSource.Http -> setMediaItem(mediaItem)
-                is DevicePlaybackSource.Rtsp -> {
-                    val mediaSource = RtspMediaSource.Factory()
-                        .setForceUseRtpTcp(source.forceTcp)
-                        .setTimeoutMs(source.timeoutMillis)
-                        .createMediaSource(mediaItem)
-                    setMediaSource(mediaSource)
-                }
-            }
-            addListener(
-                object : Player.Listener {
-                    override fun onPlayerError(error: PlaybackException) {
-                        onError(error)
-                    }
-                },
-            )
-            playWhenReady = true
-            prepare()
-        }
-    }
-    DisposableEffect(player) {
-        onDispose { player.release() }
-    }
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(220.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        AndroidView(
-            factory = { viewContext ->
-                PlayerView(viewContext).apply {
-                    useController = showControls
-                    this.player = player
-                }
-            },
-            update = { view ->
-                view.useController = showControls
-                view.player = player
-            },
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
 }
 

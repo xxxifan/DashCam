@@ -13,6 +13,10 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildFeatures {
@@ -45,9 +49,10 @@ dependencies {
     implementation("androidx.camera:camera-view:$cameraVersion")
 
     implementation("androidx.media3:media3-exoplayer:1.9.0")
-    implementation("androidx.media3:media3-exoplayer-rtsp:1.9.0")
     implementation("androidx.media3:media3-transformer:1.9.0")
     implementation("androidx.media3:media3-ui:1.9.0")
+    implementation("io.github.carguo:gsyvideoplayer-java:13.1.0")
+    implementation("io.github.carguo:gsyvideoplayer-ex_so:13.1.0")
     implementation("com.tencent:mmkv:2.4.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.10.2")
