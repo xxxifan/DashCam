@@ -59,6 +59,7 @@ object PreviewController {
     }
 
     fun unbind(context: Context) {
+        generation += 1
         runCatching {
             val preview = boundPreview ?: return@runCatching
             ProcessCameraProvider.getInstance(context).get().unbind(preview)

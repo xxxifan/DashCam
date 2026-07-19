@@ -276,6 +276,7 @@ private fun DashCamApp(
         var showConfirm by remember { mutableStateOf(false) }
         var showBackConfirmDialog by remember { mutableStateOf(false) }
         var showBatteryOptimizationPrompt by remember { mutableStateOf(false) }
+        var previewEnabled by remember { mutableStateOf(false) }
         val libraryListState = rememberLazyListState()
         val shouldShowConfirmAfterPermission = consumePermissionResult()
         val hdrWindowEnabled = playbackEntry == null &&
@@ -574,6 +575,8 @@ private fun DashCamApp(
                         isRecording = uiState.isRecording,
                         settings = recordingSettings,
                         storageEstimate = storageEstimate,
+                        previewEnabled = previewEnabled,
+                        onEnablePreview = { previewEnabled = true },
                         onStart = {
                             if (context.hasRecordingPermissions()) {
                                 showConfirm = true
@@ -685,6 +688,8 @@ private fun RecordingHome(
     isRecording: Boolean,
     settings: RecordingSettings,
     storageEstimate: RecordingStorageEstimate,
+    previewEnabled: Boolean,
+    onEnablePreview: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -700,6 +705,8 @@ private fun RecordingHome(
             CameraPreviewCard(
                 isRecording = isRecording,
                 settings = settings,
+                previewEnabled = previewEnabled,
+                onEnablePreview = onEnablePreview,
             )
         }
         item {
@@ -855,11 +862,35 @@ private fun RecordingStatusChips(
 private fun CameraPreviewCard(
     isRecording: Boolean,
     settings: RecordingSettings,
+    previewEnabled: Boolean,
+    onEnablePreview: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
     Card(modifier = Modifier.fillMaxWidth()) {
+        LaunchedEffect(previewEnabled, isRecording, previewView, settings) {
+            if (!previewEnabled || isRecording) {
+                if (previewView != null) {
+                    PreviewController.unbind(context)
+                }
+                previewView = null
+            } else {
+                previewView?.let {
+                    it.implementationMode = settings.previewImplementationMode()
+                    it.applyHdrHeadroom(settings.dynamicRange.isHdrDynamicRange())
+                    PreviewController.bind(context, lifecycleOwner, it, settings)
+                    it.applyHdrHeadroomAfterLayout(settings.dynamicRange.isHdrDynamicRange())
+                }
+            }
+        }
+        DisposableEffect(Unit) {
+            onDispose {
+                if (previewView != null) {
+                    PreviewController.unbind(context)
+                }
+            }
+        }
         if (isRecording) {
             Box(
                 modifier = Modifier
@@ -874,18 +905,18 @@ private fun CameraPreviewCard(
             }
             return@Card
         }
-        LaunchedEffect(previewView, settings) {
-            previewView?.let {
-                it.implementationMode = settings.previewImplementationMode()
-                it.applyHdrHeadroom(settings.dynamicRange.isHdrDynamicRange())
-                PreviewController.bind(context, lifecycleOwner, it, settings)
-                it.applyHdrHeadroomAfterLayout(settings.dynamicRange.isHdrDynamicRange())
+        if (!previewEnabled) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f),
+                contentAlignment = Alignment.Center,
+            ) {
+                Button(onClick = onEnablePreview) {
+                    Text("开启预览")
+                }
             }
-        }
-        DisposableEffect(Unit) {
-            onDispose {
-                PreviewController.unbind(context)
-            }
+            return@Card
         }
         AndroidView(
             modifier = Modifier
