@@ -31,6 +31,8 @@ internal fun DevicePlayer(
     showControls: Boolean,
     onError: (Throwable) -> Unit,
     onDiagnostic: (String, Map<String, Any?>) -> Unit,
+    onVideoSizeChanged: (width: Int, height: Int) -> Unit = { _, _ -> },
+    showNavigationControls: Boolean = showControls,
     modifier: Modifier = Modifier
         .fillMaxWidth()
         .height(220.dp),
@@ -104,11 +106,15 @@ internal fun DevicePlayer(
                                 },
                             )
                             .build(player)
-                        if (!showControls) {
+                        if (!showNavigationControls) {
                             player.titleTextView.visibility = View.GONE
                             player.backButton.visibility = View.GONE
                             player.fullscreenButton.visibility = View.GONE
                         }
+                        if (!showControls) {
+                            player.hideProgressControls()
+                        }
+                        player.onVideoSizeChanged = onVideoSizeChanged
                         player.startPlayLogic()
                     }
                 },
@@ -122,6 +128,7 @@ private class DiagnosticGSYVideoPlayer(
     context: Context,
 ) : StandardGSYVideoPlayer(context) {
     var onDiagnostic: (String, Map<String, Any?>) -> Unit = { _, _ -> }
+    var onVideoSizeChanged: (Int, Int) -> Unit = { _, _ -> }
 
     override fun onInfo(what: Int, extra: Int) {
         super.onInfo(what, extra)
@@ -137,6 +144,7 @@ private class DiagnosticGSYVideoPlayer(
 
     override fun onVideoSizeChanged() {
         super.onVideoSizeChanged()
+        onVideoSizeChanged(currentVideoWidth, currentVideoHeight)
         onDiagnostic("device_ijk_video_size_changed", diagnosticState())
     }
 
@@ -146,6 +154,12 @@ private class DiagnosticGSYVideoPlayer(
             diagnosticState() + mapOf("what" to what, "extra" to extra),
         )
         super.onError(what, extra)
+    }
+
+    fun hideProgressControls() {
+        mBottomContainer?.visibility = View.GONE
+        mBottomProgressBar?.visibility = View.GONE
+        mProgressBar?.visibility = View.GONE
     }
 }
 

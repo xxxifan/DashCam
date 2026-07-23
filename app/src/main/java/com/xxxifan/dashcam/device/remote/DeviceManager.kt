@@ -1,6 +1,8 @@
 package com.xxxifan.dashcam.device.remote
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -21,7 +23,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.URL
+import java.util.concurrent.atomic.AtomicLong
 
 class DeviceManager private constructor(
     context: Context,
@@ -38,6 +43,9 @@ class DeviceManager private constructor(
     private val preferences = DevicePreferencesStore()
     private val probeMutex = Mutex()
     private val sessionMutex = Mutex()
+    private val thumbnailMutex = Mutex()
+    private val mediaCache = DeviceMediaSessionCache()
+    private val mediaCacheGeneration = AtomicLong(0L)
     private var activeSession: DeviceSession? = null
     private var activeRoute: DeviceNetworkRoute? = null
     private var networkCallbackRegistered = false
@@ -73,6 +81,18 @@ class DeviceManager private constructor(
 
     suspend fun probeAll(trigger: String = "manual") {
         probeMutex.withLock {
+            val route = networkResolver.findWifiRoute()
+            if (trigger == WIFI_AVAILABLE_TRIGGER && hasActiveSessionOn(route)) {
+                diagnostics.log(
+                    "device_probe_skipped_active_session",
+                    mapOf(
+                        "trigger" to trigger,
+                        "deviceId" to _state.value.activeDevice?.id,
+                        "wifiRoute" to (route?.description ?: "unavailable"),
+                    ),
+                )
+                return@withLock
+            }
             _state.update {
                 it.copy(
                     isProbing = true,
@@ -80,7 +100,6 @@ class DeviceManager private constructor(
                     statusMessage = "正在探测记录仪…",
                 )
             }
-            val route = networkResolver.findWifiRoute()
             diagnostics.log(
                 "device_probe_run_started",
                 mapOf(
@@ -360,7 +379,7 @@ class DeviceManager private constructor(
 
     suspend fun loadRemoteMedia(category: RemoteMediaCategory) =
         runSessionOperation("正在读取${category.displayName}…") { session ->
-            val media = session.loadRemoteMedia(category)
+            val media = mediaCache.prepare(session.loadRemoteMedia(category))
             _state.update {
                 it.copy(
                     previewSource = null,
@@ -371,6 +390,42 @@ class DeviceManager private constructor(
                 )
             }
         }
+
+    suspend fun loadThumbnail(media: RemoteDeviceMedia): Bitmap? {
+        mediaCache.thumbnail(media.id)?.let { return it }
+        val thumbnailUri = media.thumbnailUri ?: return null
+        val route = sessionMutex.withLock { activeRoute } ?: return null
+        val generation = mediaCacheGeneration.get()
+        return thumbnailMutex.withLock {
+            mediaCache.thumbnail(media.id)?.let { return@withLock it }
+            val bitmap = withContext(Dispatchers.IO) {
+                runCatching {
+                    val connection = route.openHttpConnection(URL(thumbnailUri.toString()))
+                    try {
+                        connection.connectTimeout = THUMBNAIL_CONNECT_TIMEOUT_MILLIS
+                        connection.readTimeout = THUMBNAIL_READ_TIMEOUT_MILLIS
+                        connection.instanceFollowRedirects = true
+                        connection.useCaches = false
+                        if (connection.responseCode !in 200..299) {
+                            return@runCatching null
+                        }
+                        BitmapFactory.decodeStream(
+                            connection.inputStream,
+                            null,
+                            BitmapFactory.Options().apply {
+                                inPreferredConfig = Bitmap.Config.RGB_565
+                            },
+                        )
+                    } finally {
+                        connection.disconnect()
+                    }
+                }.getOrNull()
+            }
+            bitmap?.takeIf { mediaCacheGeneration.get() == generation }?.also {
+                mediaCache.putThumbnail(media.id, it)
+            }
+        }
+    }
 
     fun play(media: RemoteDeviceMedia) {
         _state.update {
@@ -526,6 +581,8 @@ class DeviceManager private constructor(
         }
         activeSession = null
         activeRoute = null
+        mediaCacheGeneration.incrementAndGet()
+        mediaCache.clear()
         connectivityManager.bindProcessToNetwork(null)
         _state.update {
             it.copy(
@@ -543,6 +600,13 @@ class DeviceManager private constructor(
 
     private fun setOperationError(message: String) {
         _state.update { it.copy(isBusy = false, statusMessage = message, downloadProgress = null) }
+    }
+
+    private suspend fun hasActiveSessionOn(route: DeviceNetworkRoute?): Boolean {
+        val candidateRoute = route ?: return false
+        return sessionMutex.withLock {
+            activeSession != null && activeRoute?.network == candidateRoute.network
+        }
     }
 
     private fun registerWifiObserver() {
@@ -611,7 +675,10 @@ class DeviceManager private constructor(
     }
 
     companion object {
+        private const val WIFI_AVAILABLE_TRIGGER = "wifi_available"
         private const val WIFI_SETTLE_DELAY_MILLIS = 750L
+        private const val THUMBNAIL_CONNECT_TIMEOUT_MILLIS = 3_000
+        private const val THUMBNAIL_READ_TIMEOUT_MILLIS = 8_000
 
         @Volatile
         private var instance: DeviceManager? = null

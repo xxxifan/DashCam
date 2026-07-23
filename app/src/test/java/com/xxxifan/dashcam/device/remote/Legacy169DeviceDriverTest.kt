@@ -1,5 +1,6 @@
 package com.xxxifan.dashcam.device.remote
 
+import java.io.IOException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -38,5 +39,21 @@ class Legacy169DeviceDriverTest {
         assertTrue(shouldLogHeartbeatFailure(15))
         assertFalse(shouldLogHeartbeatFailure(16))
         assertTrue(shouldLogHeartbeatFailure(30))
+    }
+
+    @Test
+    fun previewPreparationRetriesOneTransientFailure() {
+        assertTrue(shouldRetryLegacy169PreviewPreparation(1, IOException("timeout")))
+        assertFalse(shouldRetryLegacy169PreviewPreparation(2, IOException("timeout")))
+    }
+
+    @Test
+    fun previewPreparationDoesNotRetryProtocolFailure() {
+        assertFalse(
+            shouldRetryLegacy169PreviewPreparation(
+                attempt = 1,
+                error = DeviceProtocolException("进入录像模式失败：HTTP 404"),
+            ),
+        )
     }
 }

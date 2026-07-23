@@ -1,10 +1,20 @@
 package com.xxxifan.dashcam.device.remote
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,19 +26,28 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Warning
@@ -46,9 +65,11 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +79,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -88,14 +111,18 @@ fun DeviceScreen(
     var scanMessage by remember { mutableStateOf("正在查找记录仪…") }
     var isScanning by remember { mutableStateOf(false) }
     var scanAfterPermission by remember { mutableStateOf(false) }
+    var openWifiPanel by remember { mutableStateOf(false) }
     var passwordDevice by remember { mutableStateOf<DeviceWifiNetwork?>(null) }
 
-    suspend fun scanWifi() {
+    suspend fun scanWifi(openPanelWhenDisabled: Boolean = true) {
         isScanning = true
         val result = manager.scanWifi()
         wifiNetworks = result.networks
         scanMessage = result.message
         isScanning = false
+        if (!result.wifiEnabled && openPanelWhenDisabled) {
+            openWifiPanel = true
+        }
     }
 
     val scanPermissions = arrayOf(
@@ -109,6 +136,17 @@ fun DeviceScreen(
         if (scanAfterPermission) {
             scanAfterPermission = false
             scope.launch { scanWifi() }
+        }
+    }
+    val wifiPanelLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        scope.launch { scanWifi(openPanelWhenDisabled = false) }
+    }
+    LaunchedEffect(openWifiPanel) {
+        if (openWifiPanel) {
+            openWifiPanel = false
+            wifiPanelLauncher.launch(Intent(Settings.Panel.ACTION_WIFI))
         }
     }
     val requestScan: () -> Unit = {
@@ -159,6 +197,21 @@ fun DeviceScreen(
         ) {
             manager.startPreview()
         }
+    }
+
+    state.playbackMedia?.let { media ->
+        RemoteVideoPlaybackScreen(
+            media = media,
+            mediaList = state.remoteMedia,
+            onPrevious = { previous -> manager.play(previous) },
+            onNext = { next -> manager.play(next) },
+            onDismiss = { scope.launch { manager.stopPlayer() } },
+            onError = { source, error -> manager.reportPlaybackError(source, error) },
+            onDiagnostic = { source, event, fields ->
+                manager.reportPlaybackDiagnostic(source, event, fields)
+            },
+        )
+        return
     }
 
     if (state.activeDevice == null || showDevicePicker) {
@@ -239,6 +292,115 @@ fun DeviceScreen(
                 onDisconnect = { scope.launch { manager.closeActive() } },
                 onForget = { scope.launch { manager.forgetDevice() } },
             )
+        }
+    }
+}
+
+@Composable
+internal fun RemoteVideoPlaybackScreen(
+    media: RemoteDeviceMedia,
+    mediaList: List<RemoteDeviceMedia>,
+    onPrevious: (RemoteDeviceMedia) -> Unit,
+    onNext: (RemoteDeviceMedia) -> Unit,
+    onDismiss: () -> Unit,
+    onError: (DevicePlaybackSource, Throwable) -> Unit,
+    onDiagnostic: (DevicePlaybackSource, String, Map<String, Any?>) -> Unit,
+) {
+    val context = LocalContext.current
+    val activity = context.findActivity()
+    var isLandscape by remember(media.id) { mutableStateOf<Boolean?>(null) }
+    val playableMedia = remember(mediaList) {
+        mediaList.filter { it.format != RemoteMediaFormat.Jpeg }
+    }
+    val currentIndex = playableMedia.indexOfFirst { it.id == media.id }
+    val previous = playableMedia.getOrNull(currentIndex - 1)
+    val next = playableMedia.getOrNull(currentIndex + 1)
+
+    BackHandler(onBack = onDismiss)
+    DisposableEffect(activity, isLandscape) {
+        val previousOrientation = activity?.requestedOrientation
+        if (activity != null && isLandscape == true) {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+        onDispose {
+            if (activity != null && previousOrientation != null) {
+                activity.requestedOrientation = previousOrientation
+            }
+        }
+    }
+
+    Surface(
+        color = Color.Black,
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .safeDrawingPadding(),
+        ) {
+            DevicePlayer(
+                source = media.playbackSource,
+                showControls = true,
+                onError = { onError(media.playbackSource, it) },
+                onDiagnostic = { event, fields ->
+                    onDiagnostic(media.playbackSource, event, fields)
+                },
+                onVideoSizeChanged = { width, height ->
+                    if (width > 0 && height > 0) {
+                        isLandscape = width > height
+                    }
+                },
+                showNavigationControls = false,
+                modifier = Modifier.fillMaxSize(),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.48f))
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .align(Alignment.TopCenter),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Filled.Close, contentDescription = "关闭", tint = Color.White)
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        media.createdAtMillis?.formatRemoteMediaTimestamp() ?: media.name,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        media.name,
+                        color = Color(0xFFCBD5E1),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .background(Color.Black.copy(alpha = 0.48f), RoundedCornerShape(24.dp))
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                IconButton(onClick = { previous?.let(onPrevious) }, enabled = previous != null) {
+                    Icon(Icons.Filled.SkipPrevious, contentDescription = "上一个视频", tint = Color.White)
+                }
+                Text(
+                    if (currentIndex >= 0) "${currentIndex + 1}/${playableMedia.size}" else "视频",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                IconButton(onClick = { next?.let(onNext) }, enabled = next != null) {
+                    Icon(Icons.Filled.SkipNext, contentDescription = "下一个视频", tint = Color.White)
+                }
+            }
         }
     }
 }
@@ -553,8 +715,6 @@ private fun LivePreviewPage(
                     )
                 } else if (state.isBusy) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = Color.White)
-                        Spacer(Modifier.height(12.dp))
                         Text("正在连接实时画面", color = Color.White)
                     }
                 } else {
@@ -593,6 +753,7 @@ private fun DeviceFilesPage(
     manager: DeviceManager,
 ) {
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
     val supportedCategories = state.supportedCategories
         .ifEmpty { RemoteMediaCategory.entries.toSet() }
     var selectedCategory by remember(state.activeDevice?.id) {
@@ -601,6 +762,10 @@ private fun DeviceFilesPage(
                 ?: supportedCategories.first(),
         )
     }
+    var expandedMediaId by remember(state.activeDevice?.id) { mutableStateOf<String?>(null) }
+    var selectedTimelineMediaId by remember(state.activeDevice?.id) { mutableStateOf<String?>(null) }
+    val showTimeline = selectedCategory != RemoteMediaCategory.Photo && state.remoteMedia.isNotEmpty()
+    val firstMediaItemIndex = if (showTimeline) 3 else 2
 
     LaunchedEffect(supportedCategories) {
         if (selectedCategory !in supportedCategories) {
@@ -608,11 +773,14 @@ private fun DeviceFilesPage(
         }
     }
     LaunchedEffect(selectedCategory, state.activeDevice?.id) {
+        expandedMediaId = null
+        selectedTimelineMediaId = null
         manager.loadRemoteMedia(selectedCategory)
     }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
+        state = listState,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -656,7 +824,10 @@ private fun DeviceFilesPage(
             }
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 supportedCategories.forEach { category ->
                     FilterChip(
                         selected = selectedCategory == category,
@@ -664,6 +835,21 @@ private fun DeviceFilesPage(
                         label = { Text(category.shortName()) },
                     )
                 }
+            }
+        }
+        if (showTimeline) {
+            item(key = "media-timeline") {
+                DeviceMediaTimeline(
+                    media = state.remoteMedia,
+                    selectedMediaId = selectedTimelineMediaId,
+                    onSelect = { index, selected ->
+                        selectedTimelineMediaId = selected.id
+                        expandedMediaId = selected.id
+                        scope.launch {
+                            listState.animateScrollToItem(firstMediaItemIndex + index)
+                        }
+                    },
+                )
             }
         }
         if (state.isBusy && state.remoteMedia.isEmpty()) {
@@ -692,11 +878,17 @@ private fun DeviceFilesPage(
                 }
             }
         }
-        items(state.remoteMedia, key = { it.id }) { media ->
+        itemsIndexed(state.remoteMedia, key = { _, media -> media.id }) { _, media ->
             RemoteMediaItem(
                 media = media,
                 progress = state.downloadProgress?.takeIf { it.mediaId == media.id },
                 enabled = !state.isBusy,
+                expanded = expandedMediaId == media.id,
+                manager = manager,
+                onToggleExpanded = {
+                    expandedMediaId = media.id.takeUnless { it == expandedMediaId }
+                    selectedTimelineMediaId = media.id
+                },
                 onPlay = { manager.play(media) },
                 onDownload = { scope.launch { manager.download(media) } },
             )
@@ -714,14 +906,73 @@ private fun DeviceFilesPage(
 }
 
 @Composable
+private fun DeviceMediaTimeline(
+    media: List<RemoteDeviceMedia>,
+    selectedMediaId: String?,
+    onSelect: (index: Int, media: RemoteDeviceMedia) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("时间标尺", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            itemsIndexed(media, key = { _, item -> "timeline-${item.id}" }) { index, item ->
+                val selected = selectedMediaId == item.id
+                val color = if (selected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.outline
+                }
+                Column(
+                    modifier = Modifier
+                        .width(76.dp)
+                        .clickable { onSelect(index, item) }
+                        .padding(vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(2.dp)
+                            .height(if (selected) 22.dp else 14.dp)
+                            .background(color, RoundedCornerShape(1.dp)),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        item.createdAtMillis?.formatRemoteTimelineTime() ?: "--:--:--",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = color,
+                        maxLines = 1,
+                    )
+                    Text(
+                        item.createdAtMillis?.formatRemoteTimelineDate() ?: "日期未知",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun RemoteMediaItem(
     media: RemoteDeviceMedia,
     progress: DeviceDownloadProgress?,
     enabled: Boolean,
+    expanded: Boolean,
+    manager: DeviceManager,
+    onToggleExpanded: () -> Unit,
     onPlay: () -> Unit,
     onDownload: () -> Unit,
 ) {
-    Card(shape = RoundedCornerShape(8.dp)) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggleExpanded),
+        shape = RoundedCornerShape(8.dp),
+    ) {
         Column(
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -735,7 +986,7 @@ private fun RemoteMediaItem(
                 Spacer(Modifier.size(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        media.name,
+                        media.createdAtMillis?.formatRemoteMediaTimestamp() ?: media.name,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         fontWeight = FontWeight.Medium,
@@ -744,6 +995,7 @@ private fun RemoteMediaItem(
                         buildString {
                             append(media.format.displayName())
                             media.sizeBytes?.let { append(" · ${it.formatBytes()}") }
+                            media.durationMillis?.let { append(" · ${it.formatRemoteDuration()}") }
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -758,10 +1010,70 @@ private fun RemoteMediaItem(
                     Icon(Icons.Filled.CloudDownload, contentDescription = "下载")
                 }
             }
+            if (expanded) {
+                Text(
+                    media.name,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                RemoteMediaThumbnail(
+                    media = media,
+                    manager = manager,
+                    onPlay = onPlay.takeIf { media.format != RemoteMediaFormat.Jpeg },
+                )
+            }
             progress?.let {
                 it.fraction?.let { fraction ->
                     LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
                 } ?: LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+@Composable
+private fun RemoteMediaThumbnail(
+    media: RemoteDeviceMedia,
+    manager: DeviceManager,
+    onPlay: (() -> Unit)?,
+) {
+    var bitmap by remember(media.id) { mutableStateOf<Bitmap?>(null) }
+    var loading by remember(media.id) { mutableStateOf(true) }
+
+    LaunchedEffect(media.id) {
+        loading = true
+        bitmap = manager.loadThumbnail(media)
+        loading = false
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(16f / 9f)
+            .background(Color.Black, RoundedCornerShape(6.dp))
+            .clickable(enabled = onPlay != null) { onPlay?.invoke() },
+        contentAlignment = Alignment.Center,
+    ) {
+        bitmap?.let { thumbnail ->
+            Image(
+                bitmap = thumbnail.asImageBitmap(),
+                contentDescription = "${media.name} 缩略图",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        }
+        when {
+            loading -> CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp)
+            bitmap == null -> Text("缩略图不可用", color = Color.White)
+            onPlay != null -> Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .background(Color.Black.copy(alpha = 0.58f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = "播放", tint = Color.White)
             }
         }
     }
@@ -898,4 +1210,15 @@ private fun signalColor(rssi: Int): Color = when {
     rssi >= -55 -> Color(0xFF15803D)
     rssi >= -72 -> Color(0xFFD97706)
     else -> Color(0xFF64748B)
+}
+
+private fun Context.findActivity(): Activity? {
+    var current = this
+    while (current is ContextWrapper) {
+        if (current is Activity) {
+            return current
+        }
+        current = current.baseContext
+    }
+    return null
 }

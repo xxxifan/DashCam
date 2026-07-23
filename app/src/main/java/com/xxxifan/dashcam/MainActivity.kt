@@ -99,6 +99,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -158,6 +159,7 @@ import com.xxxifan.dashcam.data.timeLabel
 import com.xxxifan.dashcam.device.DeviceDisplayNameResolver
 import com.xxxifan.dashcam.device.remote.DeviceManager
 import com.xxxifan.dashcam.device.remote.DeviceScreen
+import com.xxxifan.dashcam.device.remote.RemoteVideoPlaybackScreen
 import com.xxxifan.dashcam.recording.RecordingService
 import com.xxxifan.dashcam.recording.RecordingDowngradeReason
 import com.xxxifan.dashcam.recording.RecordingDowngradeState
@@ -253,6 +255,7 @@ private fun DashCamApp(
             mutableStateOf(cameraCapabilitiesRepository.capabilities())
         }
         val uiState by RecordingStateBus.state.collectAsStateWithLifecycle()
+        val remoteDeviceState by deviceManager.state.collectAsStateWithLifecycle()
         val entries by recordingRepository.entries.collectAsStateWithLifecycle()
         val audioDenoiseTasks by audioDenoiseManager.tasks.collectAsStateWithLifecycle()
         val activeRecordingPaths = remember(uiState.currentSegmentPath) {
@@ -272,7 +275,7 @@ private fun DashCamApp(
                 ),
             )
         }
-        var selectedTab by remember { mutableIntStateOf(0) }
+        var selectedTab by rememberSaveable { mutableIntStateOf(0) }
         var showConfirm by remember { mutableStateOf(false) }
         var showBackConfirmDialog by remember { mutableStateOf(false) }
         var showBatteryOptimizationPrompt by remember { mutableStateOf(false) }
@@ -523,6 +526,19 @@ private fun DashCamApp(
                     audioDenoiseManager.requestManually(entry.id, forceProcessing = force)
                 },
                 playbackPreferencesStore = playbackPreferencesStore,
+            )
+        } else if (remoteDeviceState.playbackMedia != null) {
+            val media = requireNotNull(remoteDeviceState.playbackMedia)
+            RemoteVideoPlaybackScreen(
+                media = media,
+                mediaList = remoteDeviceState.remoteMedia,
+                onPrevious = { previous -> deviceManager.play(previous) },
+                onNext = { next -> deviceManager.play(next) },
+                onDismiss = { appScope.launch { deviceManager.stopPlayer() } },
+                onError = { source, error -> deviceManager.reportPlaybackError(source, error) },
+                onDiagnostic = { source, event, fields ->
+                    deviceManager.reportPlaybackDiagnostic(source, event, fields)
+                },
             )
         } else {
             BackHandler(enabled = uiState.isRecording) {

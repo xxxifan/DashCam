@@ -11,8 +11,11 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.util.UUID
 import kotlin.system.measureTimeMillis
 
@@ -71,34 +74,34 @@ class Legacy169DeviceDriver : DeviceProtocolDriver {
         private val client = DeviceHttpClient(route)
         private val sessionJob = SupervisorJob()
         private val sessionScope = CoroutineScope(sessionJob + Dispatchers.IO)
-        private val heartbeatJob: Job = sessionScope.launch { runHeartbeatLoop() }
+        private val controlRequestMutex = Mutex()
+        private var heartbeatJob: Job? = null
         private var previewPrepared = false
         private var closed = false
 
         override val supportedCategories = RemoteMediaCategory.entries.toSet()
 
-        override suspend fun preparePreview(): DevicePlaybackSource {
+        override suspend fun preparePreview(): DevicePlaybackSource = controlRequestMutex.withLock {
             diagnostics.log("device_preview_prepare_started", mapOf("deviceId" to device.id))
-            client.postEmpty("$BASE_URL/app/enterrecorder").requireSuccess("进入录像模式")
-            client.postEmpty("$BASE_URL/app/setparamvalue?param=rec&value=1").requireSuccess("启动设备录像")
+            val source = preparePreviewWithRetry()
             previewPrepared = true
-            return DevicePlaybackSource.Rtsp(
-                uri = "rtsp://$HOST".toUri(),
-                forceTcp = true,
-                timeoutMillis = 5_000L,
-            ).also {
-                diagnostics.log(
-                    "device_preview_ready",
-                    mapOf("deviceId" to device.id, "uri" to it.uri, "forceTcp" to it.forceTcp),
-                )
-            }
+            diagnostics.log(
+                "device_preview_ready",
+                mapOf(
+                    "deviceId" to device.id,
+                    "uri" to source.uri,
+                    "forceTcp" to (source as? DevicePlaybackSource.Rtsp)?.forceTcp,
+                ),
+            )
+            startHeartbeatIfNeeded()
+            source
         }
 
         override suspend fun releasePreview() {
             previewPrepared = false
         }
 
-        override suspend fun loadStorageInfo(): DeviceStorageInfo {
+        override suspend fun loadStorageInfo(): DeviceStorageInfo = controlRequestMutex.withLock {
             val response = client.get("$BASE_URL/app/getsdinfo").requireSuccess("读取存储容量")
             val root = JSONObject(response.body)
             if (root.optInt("result", -1) != 0) {
@@ -111,7 +114,7 @@ class Legacy169DeviceDriver : DeviceProtocolDriver {
             val freeBytes = legacy169StorageMiBToBytes(info.optLong("free", -1L))
                 ?.takeIf { it <= totalBytes }
                 ?: throw DeviceProtocolException("设备返回的剩余容量无效")
-            return DeviceStorageInfo(
+            DeviceStorageInfo(
                 totalBytes = totalBytes,
                 freeBytes = freeBytes,
             ).also { storage ->
@@ -127,27 +130,28 @@ class Legacy169DeviceDriver : DeviceProtocolDriver {
             }
         }
 
-        override suspend fun loadRemoteMedia(category: RemoteMediaCategory): List<RemoteDeviceMedia> {
-            diagnostics.log(
-                "device_media_list_started",
-                mapOf("deviceId" to device.id, "category" to category.name),
-            )
-            client.postEmpty("$BASE_URL/app/setparamvalue?param=rec&value=0").requireSuccess("停止设备录像")
-            client.postEmpty("$BASE_URL/app/playback?param=enter").requireSuccess("进入回放模式")
-            previewPrepared = false
-            val requestUrl = when (category) {
-                RemoteMediaCategory.NormalVideo -> "$BASE_URL/app/getfilelist?folder=loop&start=0&end=99999"
-                RemoteMediaCategory.EmergencyVideo -> "$BASE_URL/app/getfilelist?folder=emr&start=0&end=99999"
-                RemoteMediaCategory.Photo -> "$BASE_URL/app/getfilelist?folder=event&start=0&end=99999"
+        override suspend fun loadRemoteMedia(category: RemoteMediaCategory): List<RemoteDeviceMedia> =
+            controlRequestMutex.withLock {
+                diagnostics.log(
+                    "device_media_list_started",
+                    mapOf("deviceId" to device.id, "category" to category.name),
+                )
+                client.postEmpty("$BASE_URL/app/setparamvalue?param=rec&value=0").requireSuccess("停止设备录像")
+                client.postEmpty("$BASE_URL/app/playback?param=enter").requireSuccess("进入回放模式")
+                previewPrepared = false
+                val requestUrl = when (category) {
+                    RemoteMediaCategory.NormalVideo -> "$BASE_URL/app/getfilelist?folder=loop&start=0&end=99999"
+                    RemoteMediaCategory.EmergencyVideo -> "$BASE_URL/app/getfilelist?folder=emr&start=0&end=99999"
+                    RemoteMediaCategory.Photo -> "$BASE_URL/app/getfilelist?folder=event&start=0&end=99999"
+                }
+                val response = client.get(requestUrl).requireSuccess("读取文件列表")
+                val media = parseFileList(response.body, category)
+                diagnostics.log(
+                    "device_media_list_completed",
+                    mapOf("deviceId" to device.id, "category" to category.name, "count" to media.size),
+                )
+                media
             }
-            val response = client.get(requestUrl).requireSuccess("读取文件列表")
-            val media = parseFileList(response.body, category)
-            diagnostics.log(
-                "device_media_list_completed",
-                mapOf("deviceId" to device.id, "category" to category.name, "count" to media.size),
-            )
-            return media
-        }
 
         override suspend fun download(
             media: RemoteDeviceMedia,
@@ -191,11 +195,114 @@ class Legacy169DeviceDriver : DeviceProtocolDriver {
                 return
             }
             closed = true
-            heartbeatJob.cancelAndJoin()
+            heartbeatJob?.cancelAndJoin()
+            heartbeatJob = null
             sessionJob.cancel()
             releasePreview()
             diagnostics.log("device_heartbeat_stopped", mapOf("deviceId" to device.id))
             diagnostics.log("device_session_closed", mapOf("deviceId" to device.id))
+        }
+
+        private suspend fun preparePreviewWithRetry(): DevicePlaybackSource {
+            var lastFailure: Throwable? = null
+            for (attempt in 1..LEGACY169_PREVIEW_PREPARE_MAX_ATTEMPTS) {
+                diagnostics.log(
+                    "device_preview_prepare_attempt_started",
+                    mapOf("deviceId" to device.id, "attempt" to attempt),
+                )
+                try {
+                    return preparePreviewAttempt(attempt)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    lastFailure = error
+                    val willRetry = shouldRetryLegacy169PreviewPreparation(attempt, error)
+                    diagnostics.log(
+                        "device_preview_prepare_attempt_failed",
+                        mapOf(
+                            "deviceId" to device.id,
+                            "attempt" to attempt,
+                            "willRetry" to willRetry,
+                            "error" to (error.message ?: error.javaClass.simpleName),
+                            "errorType" to error.javaClass.name,
+                        ),
+                    )
+                    if (!willRetry) {
+                        throw error
+                    }
+                    delay(PREVIEW_PREPARE_RETRY_DELAY_MILLIS)
+                }
+            }
+            throw checkNotNull(lastFailure)
+        }
+
+        private suspend fun preparePreviewAttempt(attempt: Int): DevicePlaybackSource {
+            runPreviewControlCommand(
+                attempt = attempt,
+                command = "enter_recorder",
+                operation = "进入录像模式",
+            ) {
+                client.postEmpty("$BASE_URL/app/enterrecorder")
+            }
+            runPreviewControlCommand(
+                attempt = attempt,
+                command = "start_recording",
+                operation = "启动设备录像",
+            ) {
+                client.postEmpty("$BASE_URL/app/setparamvalue?param=rec&value=1")
+            }
+            return DevicePlaybackSource.Rtsp(
+                uri = "rtsp://$HOST".toUri(),
+                forceTcp = true,
+                timeoutMillis = 5_000L,
+            )
+        }
+
+        private suspend fun runPreviewControlCommand(
+            attempt: Int,
+            command: String,
+            operation: String,
+            request: suspend () -> DeviceHttpResponse,
+        ) {
+            val startedAt = System.currentTimeMillis()
+            diagnostics.log(
+                "device_preview_control_command_started",
+                mapOf("deviceId" to device.id, "attempt" to attempt, "command" to command),
+            )
+            try {
+                request().requireSuccess(operation)
+                diagnostics.log(
+                    "device_preview_control_command_completed",
+                    mapOf(
+                        "deviceId" to device.id,
+                        "attempt" to attempt,
+                        "command" to command,
+                        "elapsedMillis" to (System.currentTimeMillis() - startedAt),
+                    ),
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                diagnostics.log(
+                    "device_preview_control_command_failed",
+                    mapOf(
+                        "deviceId" to device.id,
+                        "attempt" to attempt,
+                        "command" to command,
+                        "elapsedMillis" to (System.currentTimeMillis() - startedAt),
+                        "error" to (error.message ?: error.javaClass.simpleName),
+                        "errorType" to error.javaClass.name,
+                    ),
+                )
+                throw error
+            }
+        }
+
+        private fun startHeartbeatIfNeeded() {
+            if (closed || heartbeatJob?.isActive == true) {
+                return
+            }
+            heartbeatJob = sessionScope.launch { runHeartbeatLoop() }
         }
 
         private suspend fun runHeartbeatLoop() {
@@ -210,7 +317,9 @@ class Legacy169DeviceDriver : DeviceProtocolDriver {
             var consecutiveFailures = 0
             while (sessionScope.isActive) {
                 try {
-                    client.postEmpty(HEARTBEAT_URL).requireSuccess("设备心跳")
+                    controlRequestMutex.withLock {
+                        client.postEmpty(HEARTBEAT_URL).requireSuccess("设备心跳")
+                    }
                     if (consecutiveFailures > 0) {
                         diagnostics.log(
                             "device_heartbeat_recovered",
@@ -302,11 +411,22 @@ class Legacy169DeviceDriver : DeviceProtocolDriver {
         private val BASE_URL = "http://$HOST"
         private val HEARTBEAT_URL = "$BASE_URL/app/getparamvalue?param=rec"
         private const val HEARTBEAT_INTERVAL_MILLIS = 4_000L
+        private const val PREVIEW_PREPARE_RETRY_DELAY_MILLIS = 750L
     }
 }
 
 internal fun shouldLogHeartbeatFailure(consecutiveFailures: Int): Boolean =
     consecutiveFailures == 1 || consecutiveFailures % 15 == 0
+
+internal fun shouldRetryLegacy169PreviewPreparation(
+    attempt: Int,
+    error: Throwable,
+): Boolean =
+    attempt < LEGACY169_PREVIEW_PREPARE_MAX_ATTEMPTS &&
+        error is IOException &&
+        error !is DeviceProtocolException
+
+private const val LEGACY169_PREVIEW_PREPARE_MAX_ATTEMPTS = 2
 
 internal fun legacy169SizeKiBToBytes(sizeKiB: Long): Long? {
     if (sizeKiB < 0L) {

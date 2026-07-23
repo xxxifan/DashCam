@@ -12,6 +12,7 @@ data class DeviceWifiScanResult(
     val message: String,
     val rawNetworkCount: Int,
     val scanRequested: Boolean,
+    val wifiEnabled: Boolean = true,
     val failureType: String? = null,
 )
 
@@ -28,6 +29,7 @@ class DeviceWifiScanner(
                 message = "请先开启 Wi-Fi",
                 rawNetworkCount = 0,
                 scanRequested = false,
+                wifiEnabled = false,
                 failureType = "WifiDisabled",
             )
         }
