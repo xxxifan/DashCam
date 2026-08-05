@@ -14,12 +14,14 @@ class RecordingRepository(
     private val _entries = MutableStateFlow(loadEntries())
     val entries: StateFlow<List<RecordingEntry>> = _entries.asStateFlow()
 
+    @Synchronized
     fun add(entry: RecordingEntry) {
         val next = (listOf(entry) + loadEntries().filterNot { it.id == entry.id || it.filePath == entry.filePath })
             .sortedByDescending { it.startedAtMillis }
         persist(next)
     }
 
+    @Synchronized
     fun update(entry: RecordingEntry) {
         val next = loadEntries().map { existing ->
             if (existing.id == entry.id) {
@@ -31,8 +33,10 @@ class RecordingRepository(
         persist(next)
     }
 
+    @Synchronized
     fun findById(id: String): RecordingEntry? = loadEntries().firstOrNull { it.id == id }
 
+    @Synchronized
     fun markExported(id: String) {
         val next = loadEntries().map { existing ->
             if (existing.id == id) {
@@ -44,6 +48,7 @@ class RecordingRepository(
         persist(next)
     }
 
+    @Synchronized
     fun delete(entry: RecordingEntry) {
         entry.file.delete()
         entry.thumbnailPath?.let { File(it).delete() }
@@ -52,6 +57,7 @@ class RecordingRepository(
         persist(next)
     }
 
+    @Synchronized
     fun deleteAll(entries: List<RecordingEntry>): Int {
         if (entries.isEmpty()) {
             return 0
@@ -67,11 +73,13 @@ class RecordingRepository(
         return entries.size
     }
 
+    @Synchronized
     fun refresh() {
         val existing = loadEntries().filter { File(it.filePath).exists() }
         persist(existing, notify = false)
     }
 
+    @Synchronized
     fun refreshFromDirectory(
         directory: File,
         excludedPaths: Set<String> = emptySet(),

@@ -2,7 +2,9 @@ package com.xxxifan.dashcam.data
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.ThumbnailUtils
+import android.util.LruCache
 import android.util.Size
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -23,45 +25,69 @@ class RecordingThumbnailManager(
     private val inFlightMutex = Mutex()
     private val decodeSemaphore = Semaphore(1)
     private val inFlight = mutableMapOf<String, kotlinx.coroutines.Deferred<Unit>>()
+    private val bitmapCache = object : LruCache<String, Bitmap>(BITMAP_CACHE_BYTES) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount
+    }
 
-    suspend fun ensureThumbnail(entry: RecordingEntry) = coroutineScope {
-        if (!entry.file.exists()) {
-            return@coroutineScope
+    fun cachedThumbnail(entry: RecordingEntry): Bitmap? {
+        val path = entry.thumbnailPath ?: return null
+        val matchesCurrentSize = File(path).name.contains("_${entry.sizeBytes}_")
+        return if (matchesCurrentSize) bitmapCache.get(path) else null
+    }
+
+    suspend fun loadCachedThumbnail(entry: RecordingEntry): Bitmap? {
+        cachedThumbnail(entry)?.let { return it }
+        return withContext(Dispatchers.IO) {
+            val canonicalFile = thumbnailFile(entry)
+            loadThumbnailFile(canonicalFile)
+        }
+    }
+
+    suspend fun ensureThumbnail(entry: RecordingEntry): String? = coroutineScope {
+        if (!withContext(Dispatchers.IO) { entry.file.exists() }) {
+            return@coroutineScope null
         }
 
-        val targetFile = thumbnailFile(entry)
-        if (entry.thumbnailPath == targetFile.absolutePath && targetFile.exists()) {
-            return@coroutineScope
+        val targetFile = withContext(Dispatchers.IO) { thumbnailFile(entry) }
+        if (withContext(Dispatchers.IO) { targetFile.isFile }) {
+            withContext(Dispatchers.IO) { touchDiskEntry(targetFile) }
+            return@coroutineScope targetFile.absolutePath
         }
 
+        val inFlightKey = targetFile.absolutePath
         val job = inFlightMutex.withLock {
-            inFlight[entry.id] ?: async {
+            inFlight[inFlightKey] ?: async {
                 generateAndStore(entry, targetFile)
             }.also { deferred ->
-                inFlight[entry.id] = deferred
+                inFlight[inFlightKey] = deferred
             }
         }
         try {
             job.await()
         } finally {
             inFlightMutex.withLock {
-                if (inFlight[entry.id] == job) {
-                    inFlight.remove(entry.id)
+                if (inFlight[inFlightKey] == job) {
+                    inFlight.remove(inFlightKey)
                 }
             }
+        }
+        withContext(Dispatchers.IO) {
+            targetFile.takeIf { it.isFile }?.absolutePath
         }
     }
 
     suspend fun cleanOrphans(entries: List<RecordingEntry>) {
-        val validFiles = entries
-            .filter { it.file.exists() }
-            .map { thumbnailFile(it).absolutePath }
-            .toSet()
         withContext(Dispatchers.IO) {
-            thumbnailDirectory().listFiles()
+            val validFiles = entries
+                .filter { it.file.exists() }
+                .map { thumbnailFile(it).absolutePath }
+                .toSet()
+            val directory = thumbnailDirectory()
+            directory.listFiles()
                 .orEmpty()
                 .filter { it.isFile && it.absolutePath !in validFiles }
                 .forEach { it.delete() }
+            trimDiskCache(directory)
         }
     }
 
@@ -77,8 +103,8 @@ class RecordingThumbnailManager(
         entry: RecordingEntry,
         targetFile: File,
     ) {
-        if (targetFile.exists()) {
-            recordingRepository.update(entry.copy(thumbnailPath = targetFile.absolutePath))
+        if (withContext(Dispatchers.IO) { targetFile.exists() }) {
+            withContext(Dispatchers.IO) { touchDiskEntry(targetFile) }
             return
         }
         val generated = withContext(Dispatchers.IO) {
@@ -92,11 +118,61 @@ class RecordingThumbnailManager(
                     targetFile.outputStream().use { output ->
                         bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, output)
                     }
+                    touchDiskEntry(targetFile)
+                    trimDiskCache(targetFile.parentFile ?: thumbnailDirectory())
                     targetFile
                 }.getOrNull()
             }
         } ?: return
-        recordingRepository.update(entry.copy(thumbnailPath = generated.absolutePath))
+        withContext(Dispatchers.IO) {
+            recordingRepository.update(entry.copy(thumbnailPath = generated.absolutePath))
+        }
+    }
+
+    private suspend fun loadThumbnailFile(file: File): Bitmap? {
+        if (!file.isFile) {
+            return null
+        }
+        val path = file.absolutePath
+        bitmapCache.get(path)?.let {
+            touchDiskEntry(file)
+            return it
+        }
+        return decodeSemaphore.withPermit {
+            bitmapCache.get(path) ?: BitmapFactory.decodeFile(
+                path,
+                BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                },
+            )?.also { bitmap ->
+                bitmapCache.put(path, bitmap)
+                touchDiskEntry(file)
+            }
+        }
+    }
+
+    private fun touchDiskEntry(file: File) {
+        val now = System.currentTimeMillis()
+        if (now - file.lastModified() >= DISK_CACHE_TOUCH_INTERVAL_MILLIS) {
+            file.setLastModified(now)
+        }
+    }
+
+    private fun trimDiskCache(directory: File) {
+        val files = directory.listFiles()
+            .orEmpty()
+            .filter(File::isFile)
+            .sortedByDescending(File::lastModified)
+        var retainedBytes = 0L
+        files.forEachIndexed { index, file ->
+            val fileBytes = file.length()
+            if (index >= DISK_CACHE_MAX_FILES || retainedBytes + fileBytes > DISK_CACHE_MAX_BYTES) {
+                bitmapCache.remove(file.absolutePath)
+                file.delete()
+            } else {
+                retainedBytes += fileBytes
+            }
+        }
     }
 
     private fun thumbnailFile(entry: RecordingEntry): File {
@@ -117,5 +193,9 @@ class RecordingThumbnailManager(
         const val THUMBNAIL_WIDTH = 320
         const val THUMBNAIL_HEIGHT = 180
         const val JPEG_QUALITY = 82
+        const val BITMAP_CACHE_BYTES = 16 * 1024 * 1024
+        const val DISK_CACHE_MAX_FILES = 256
+        const val DISK_CACHE_MAX_BYTES = 16L * 1024L * 1024L
+        const val DISK_CACHE_TOUCH_INTERVAL_MILLIS = 60L * 60L * 1000L
     }
 }

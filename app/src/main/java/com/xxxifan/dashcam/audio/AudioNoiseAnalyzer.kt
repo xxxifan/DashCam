@@ -4,6 +4,7 @@ import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.os.Process
 import java.io.File
 import java.nio.ByteOrder
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +20,9 @@ import kotlin.math.sqrt
 
 class AudioNoiseAnalyzer {
     suspend fun analyze(file: File): AudioNoiseAnalysis = withContext(Dispatchers.Default) {
+        val threadId = Process.myTid()
+        val previousPriority = Process.getThreadPriority(threadId)
+        Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
         val extractor = MediaExtractor()
         var decoder: MediaCodec? = null
         try {
@@ -47,6 +51,7 @@ class AudioNoiseAnalyzer {
             runCatching { decoder?.stop() }
             decoder?.release()
             extractor.release()
+            Process.setThreadPriority(previousPriority)
         }
     }
 

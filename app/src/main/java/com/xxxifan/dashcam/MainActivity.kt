@@ -8,7 +8,6 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.media.MediaFormat
 import android.net.Uri
@@ -29,6 +28,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.aspectRatio
@@ -51,6 +51,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -94,6 +95,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -106,6 +108,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -174,6 +177,8 @@ import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -223,6 +228,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DashCamApp(
     requestPermissions: () -> Unit,
@@ -254,10 +260,24 @@ private fun DashCamApp(
         var cameraCapabilities by remember {
             mutableStateOf(cameraCapabilitiesRepository.capabilities())
         }
-        val uiState by RecordingStateBus.state.collectAsStateWithLifecycle()
+        val recordingAppStateFlow = remember {
+            RecordingStateBus.state
+                .map { state ->
+                    state.copy(
+                        recordedBytes = 0L,
+                        recordedDurationNanos = 0L,
+                    )
+                }
+                .distinctUntilChanged()
+        }
+        val uiState by recordingAppStateFlow.collectAsStateWithLifecycle(
+            initialValue = RecordingStateBus.state.value.copy(
+                recordedBytes = 0L,
+                recordedDurationNanos = 0L,
+            ),
+        )
         val remoteDeviceState by deviceManager.state.collectAsStateWithLifecycle()
         val entries by recordingRepository.entries.collectAsStateWithLifecycle()
-        val audioDenoiseTasks by audioDenoiseManager.tasks.collectAsStateWithLifecycle()
         val activeRecordingPaths = remember(uiState.currentSegmentPath) {
             setOfNotNull(uiState.currentSegmentPath)
         }
@@ -270,8 +290,6 @@ private fun DashCamApp(
                     context = context,
                     settings = settings,
                     entries = entries,
-                    liveRecordedBytes = uiState.recordedBytes,
-                    liveRecordedDurationNanos = uiState.recordedDurationNanos,
                 ),
             )
         }
@@ -280,7 +298,13 @@ private fun DashCamApp(
         var showBackConfirmDialog by remember { mutableStateOf(false) }
         var showBatteryOptimizationPrompt by remember { mutableStateOf(false) }
         var previewEnabled by remember { mutableStateOf(false) }
-        val libraryListState = rememberLazyListState()
+        val libraryCacheWindow = remember {
+            LazyLayoutCacheWindow(
+                aheadFraction = 1.5f,
+                behindFraction = 0.5f,
+            )
+        }
+        val libraryListState = rememberLazyListState(cacheWindow = libraryCacheWindow)
         val shouldShowConfirmAfterPermission = consumePermissionResult()
         val hdrWindowEnabled = playbackEntry == null &&
             selectedTab == 0 &&
@@ -354,15 +378,19 @@ private fun DashCamApp(
         }
 
         LaunchedEffect(Unit) {
-            recordingRepository.refreshFromDirectory(
-                directory = LoopStorageManager.recordingDirectory(context),
-                excludedPaths = activeRecordingPaths,
-            )
+            withContext(Dispatchers.IO) {
+                recordingRepository.refreshFromDirectory(
+                    directory = LoopStorageManager.recordingDirectory(context),
+                    excludedPaths = activeRecordingPaths,
+                )
+            }
         }
 
         LaunchedEffect(recordingRepository) {
             RecordingRepository.changes.collect {
-                recordingRepository.refresh()
+                withContext(Dispatchers.IO) {
+                    recordingRepository.refresh()
+                }
             }
         }
 
@@ -381,26 +409,32 @@ private fun DashCamApp(
 
         LaunchedEffect(selectedTab, activeRecordingPaths) {
             if (selectedTab == 1) {
-                recordingRepository.refreshFromDirectory(
-                    directory = LoopStorageManager.recordingDirectory(context),
-                    excludedPaths = activeRecordingPaths,
-                )
+                withContext(Dispatchers.IO) {
+                    recordingRepository.refreshFromDirectory(
+                        directory = LoopStorageManager.recordingDirectory(context),
+                        excludedPaths = activeRecordingPaths,
+                    )
+                }
             }
         }
 
         LaunchedEffect(activeRecordingPaths) {
             if (activeRecordingPaths.isNotEmpty()) {
-                recordingRepository.refreshFromDirectory(
-                    directory = LoopStorageManager.recordingDirectory(context),
-                    excludedPaths = activeRecordingPaths,
-                )
+                withContext(Dispatchers.IO) {
+                    recordingRepository.refreshFromDirectory(
+                        directory = LoopStorageManager.recordingDirectory(context),
+                        excludedPaths = activeRecordingPaths,
+                    )
+                }
             }
         }
 
-        LaunchedEffect(selectedTab, entries) {
+        val thumbnailCleanupKey = remember(entries) {
+            entries.map { entry -> entry.id to entry.filePath }
+        }
+        LaunchedEffect(selectedTab, thumbnailCleanupKey) {
             if (selectedTab == 1) {
                 thumbnailManager.cleanOrphans(entries)
-                thumbnailManager.backfill(entries.take(8))
             }
         }
 
@@ -413,11 +447,13 @@ private fun DashCamApp(
         ) {
             val estimateSettings = uiState.activeSettings ?: settings
             while (true) {
-                storageEstimate = RecordingStorageEstimator.estimate(
-                    context = context,
-                    settings = estimateSettings,
-                    entries = entries,
-                )
+                storageEstimate = withContext(Dispatchers.IO) {
+                    RecordingStorageEstimator.estimate(
+                        context = context,
+                        settings = estimateSettings,
+                        entries = entries,
+                    )
+                }
                 if (!uiState.isRecording) {
                     break
                 }
@@ -518,7 +554,6 @@ private fun DashCamApp(
             VideoPlaybackScreen(
                 entry = activePlaybackEntry,
                 entries = entries,
-                audioDenoiseTasks = audioDenoiseTasks,
                 onDismiss = { playbackEntry = null },
                 onShare = shareRecording,
                 onExport = exportRecording,
@@ -611,8 +646,9 @@ private fun DashCamApp(
                         padding = padding,
                         listState = libraryListState,
                         entries = entries,
-                        audioDenoiseTasks = audioDenoiseTasks,
-                        recordingState = uiState,
+                        audioDenoiseManager = audioDenoiseManager,
+                        isRecording = uiState.isRecording,
+                        thumbnailManager = thumbnailManager,
                         onOpenPlayback = { playbackEntry = it },
                         onStopRecording = {
                             alertStore.clearLastStopAlert()
@@ -1000,14 +1036,18 @@ private fun SettingsScreen(
     storageEstimate: RecordingStorageEstimate,
     onSettingsChange: ((RecordingSettings) -> RecordingSettings) -> Unit,
 ) {
-    val context = LocalContext.current
     val maxLoopQuotaBytes = remember(
         settings.reservePercent,
         storageEstimate.totalBytes,
         storageEstimate.usableBytes,
         storageEstimate.recordingBytes,
     ) {
-        RecordingStorageEstimator.maxQuotaBytes(context, settings.reservePercent)
+        val protectedBytes = RecordingStorageEstimator.reserveBytes(
+            storageEstimate.totalBytes,
+            settings.reservePercent,
+        )
+        storageEstimate.recordingBytes +
+            (storageEstimate.usableBytes - protectedBytes).coerceAtLeast(0L)
     }
     val canCustomizeLoopQuota = maxLoopQuotaBytes >= RecordingStorageEstimator.MIN_LOOP_QUOTA_BYTES
     val minLoopQuotaGb = RecordingStorageEstimator.MIN_LOOP_QUOTA_BYTES.toQuotaGb()
@@ -1414,14 +1454,34 @@ private enum class CleanupRetentionOption(
     fun cutoffMillis(): Long = System.currentTimeMillis() - millis
 }
 
+private data class RecordingListItemModel(
+    val entry: RecordingEntry,
+    val fileName: String,
+    val timeSummary: String,
+    val recordingSummary: String,
+)
+
+private fun RecordingEntry.toListItemModel(): RecordingListItemModel =
+    RecordingListItemModel(
+        entry = this,
+        fileName = File(filePath).name,
+        timeSummary = "${timeLabel()} · ${durationMillis.formatDuration()} · ${sizeBytes.formatBytes()}",
+        recordingSummary = buildString {
+            append("${resolution}${frameRate}fps · ${codec.codecLabel()} · ${dynamicRange.dynamicRangeLabel()}")
+            append('\n')
+            append("$cameraLabel · 裁剪 ${cropZoomRatio.zoomRatioLabel()} · 防抖 ${stabilizationMode.label()}")
+        },
+    )
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LibraryScreen(
     padding: PaddingValues,
     listState: LazyListState,
     entries: List<RecordingEntry>,
-    audioDenoiseTasks: Map<String, AudioDenoiseTask>,
-    recordingState: RecordingUiState,
+    audioDenoiseManager: AudioDenoiseManager,
+    isRecording: Boolean,
+    thumbnailManager: RecordingThumbnailManager,
     onOpenPlayback: (RecordingEntry) -> Unit,
     onStopRecording: () -> Unit,
     onDelete: (RecordingEntry) -> Unit,
@@ -1432,6 +1492,7 @@ private fun LibraryScreen(
     var pendingDelete by remember { mutableStateOf<RecordingEntry?>(null) }
     var pendingCleanup by remember { mutableStateOf<RecordingCleanupRequest?>(null) }
     var showCleanupMenu by remember { mutableStateOf(false) }
+    val audioDenoiseTasks by audioDenoiseManager.tasks.collectAsStateWithLifecycle()
 
     pendingDelete?.let { entry ->
         DeleteRecordingDialog(
@@ -1455,7 +1516,7 @@ private fun LibraryScreen(
         )
     }
 
-    if (entries.isEmpty() && !recordingState.isRecording) {
+    if (entries.isEmpty() && !isRecording) {
         Box(
             modifier = Modifier
                 .padding(padding)
@@ -1468,7 +1529,11 @@ private fun LibraryScreen(
         return
     }
 
-    val grouped = entries.groupBy { it.dateHeader() }
+    val grouped = remember(entries) {
+        entries
+            .groupBy { it.dateHeader() }
+            .mapValues { (_, dayEntries) -> dayEntries.map(RecordingEntry::toListItemModel) }
+    }
     LazyColumn(
         state = listState,
         modifier = Modifier
@@ -1476,16 +1541,21 @@ private fun LibraryScreen(
             .fillMaxSize(),
         contentPadding = PaddingValues(bottom = 16.dp),
     ) {
-        if (recordingState.isRecording) {
-            item(key = "active-recording") {
+        if (isRecording) {
+            item(
+                key = "active-recording",
+                contentType = "active-recording",
+            ) {
                 ActiveRecordingListItem(
-                    state = recordingState,
                     onStop = onStopRecording,
                 )
             }
         }
         grouped.forEach { (date, dayEntries) ->
-            stickyHeader {
+            stickyHeader(
+                key = "date-$date",
+                contentType = "date-header",
+            ) {
                 LibraryDateHeader(
                     date = date,
                     canCleanup = entries.isNotEmpty(),
@@ -1517,10 +1587,17 @@ private fun LibraryScreen(
                     showActions = date == grouped.keys.first(),
                 )
             }
-            items(dayEntries, key = { it.id }) { entry ->
+            items(
+                items = dayEntries,
+                key = { it.entry.id },
+                contentType = { "recording" },
+            ) { model ->
+                val entry = model.entry
                 RecordingListItem(
-                    entry = entry,
+                    model = model,
                     audioDenoiseTask = audioDenoiseTasks[entry.id],
+                    thumbnailManager = thumbnailManager,
+                    listState = listState,
                     onClick = { onOpenPlayback(entry) },
                     onDelete = { pendingDelete = entry },
                     onShare = { onShare(entry) },
@@ -1587,9 +1664,9 @@ private fun LibraryDateHeader(
 }
 @Composable
 private fun ActiveRecordingListItem(
-    state: RecordingUiState,
     onStop: () -> Unit,
 ) {
+    val state by RecordingStateBus.state.collectAsStateWithLifecycle()
     val fileName = state.currentSegmentPath
         ?.let { File(it).name }
         ?: "当前片段"
@@ -1640,13 +1717,16 @@ private fun ActiveRecordingListItem(
 
 @Composable
 private fun RecordingListItem(
-    entry: RecordingEntry,
+    model: RecordingListItemModel,
     audioDenoiseTask: AudioDenoiseTask?,
+    thumbnailManager: RecordingThumbnailManager,
+    listState: LazyListState,
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
 ) {
+    val entry = model.entry
     Card(
         modifier = Modifier
             .padding(horizontal = 16.dp, vertical = 6.dp)
@@ -1659,59 +1739,56 @@ private fun RecordingListItem(
                 .height(140.dp),
             verticalAlignment = Alignment.Top,
         ) {
-            RecordingThumbnail(entry)
+            RecordingThumbnail(
+                entry = entry,
+                thumbnailManager = thumbnailManager,
+                listState = listState,
+            )
             Spacer(Modifier.width(12.dp))
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxSize(),
             ) {
-                Column {
+                Text(
+                    model.fileName,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    model.timeSummary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    model.recordingSummary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (entry.audioEnabled) {
                     Text(
-                        entry.file.name,
+                        "降噪：${audioDenoiseTask.statusLabel()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = when (audioDenoiseTask?.status) {
+                            AudioDenoiseStatus.Completed -> MaterialTheme.colorScheme.secondary
+                            AudioDenoiseStatus.Failed -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.tertiary
+                        },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        fontWeight = FontWeight.SemiBold,
                     )
+                }
+                if (entry.exported) {
                     Text(
-                        "${entry.timeLabel()} · ${entry.durationMillis.formatDuration()} · ${entry.sizeBytes.formatBytes()}",
+                        "已导出到 Movies/DashCam",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "${entry.resolution}${entry.frameRate}fps · ${entry.codec.codecLabel()} · ${entry.dynamicRange.dynamicRangeLabel()}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "${entry.cameraLabel} · 裁剪 ${entry.cropZoomRatio.zoomRatioLabel()} · 防抖 ${entry.stabilizationMode.label()}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.secondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (entry.audioEnabled) {
-                        Text(
-                            "降噪：${audioDenoiseTask.statusLabel()}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = when (audioDenoiseTask?.status) {
-                                AudioDenoiseStatus.Completed -> MaterialTheme.colorScheme.secondary
-                                AudioDenoiseStatus.Failed -> MaterialTheme.colorScheme.error
-                                else -> MaterialTheme.colorScheme.tertiary
-                            },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    if (entry.exported) {
-                        Text(
-                            "已导出到 Movies/DashCam",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
                 }
                 Spacer(Modifier.weight(1f))
                 Row(
@@ -1719,15 +1796,21 @@ private fun RecordingListItem(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = onShare, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Filled.Share, contentDescription = "分享")
-                    }
-                    IconButton(onClick = onExport, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Filled.FileUpload, contentDescription = "导出")
-                    }
-                    IconButton(onClick = onDelete, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Filled.Delete, contentDescription = "删除")
-                    }
+                    LibraryActionButton(
+                        imageVector = Icons.Filled.Share,
+                        contentDescription = "分享",
+                        onClick = onShare,
+                    )
+                    LibraryActionButton(
+                        imageVector = Icons.Filled.FileUpload,
+                        contentDescription = "导出",
+                        onClick = onExport,
+                    )
+                    LibraryActionButton(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = "删除",
+                        onClick = onDelete,
+                    )
                 }
             }
         }
@@ -1735,24 +1818,60 @@ private fun RecordingListItem(
 }
 
 @Composable
+private fun LibraryActionButton(
+    imageVector: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = imageVector,
+            contentDescription = contentDescription,
+        )
+    }
+}
+
+@Composable
 private fun RecordingThumbnail(
     entry: RecordingEntry,
+    thumbnailManager: RecordingThumbnailManager,
+    listState: LazyListState,
 ) {
-    var bitmap by remember(entry.thumbnailPath) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(entry.thumbnailPath) {
-        bitmap = withContext(Dispatchers.IO) {
-            entry.thumbnailPath
-                ?.let { BitmapFactory.decodeFile(it) }
-                ?.asImageBitmap()
+    val isScrolling by remember(listState) {
+        derivedStateOf { listState.isScrollInProgress }
+    }
+    var bitmap by remember(entry.thumbnailPath) {
+        mutableStateOf(
+            thumbnailManager.cachedThumbnail(entry)?.asImageBitmap(),
+        )
+    }
+    LaunchedEffect(entry.id, entry.thumbnailPath, isScrolling) {
+        if (bitmap != null) {
+            return@LaunchedEffect
         }
+        thumbnailManager.loadCachedThumbnail(entry)?.let { cached ->
+            bitmap = cached.asImageBitmap()
+            return@LaunchedEffect
+        }
+        if (isScrolling) {
+            return@LaunchedEffect
+        }
+        delay(THUMBNAIL_IDLE_LOAD_DELAY_MILLIS)
+        thumbnailManager.ensureThumbnail(entry)
+        bitmap = thumbnailManager.loadCachedThumbnail(entry)?.asImageBitmap()
     }
     if (bitmap != null) {
         Image(
             bitmap = bitmap!!,
             contentDescription = null,
             modifier = Modifier
-                .width(152.dp)
-                .height(116.dp)
+                .width(128.dp)
+                .height(72.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .background(Color(0xFFE2E8F0)),
             contentScale = ContentScale.Crop,
@@ -1760,8 +1879,8 @@ private fun RecordingThumbnail(
     } else {
         Box(
             modifier = Modifier
-                .width(152.dp)
-                .height(116.dp)
+                .width(128.dp)
+                .height(72.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .background(Color(0xFFE2E8F0)),
             contentAlignment = Alignment.Center,
@@ -1780,7 +1899,6 @@ private fun RecordingThumbnail(
 private fun VideoPlaybackScreen(
     entry: RecordingEntry,
     entries: List<RecordingEntry>,
-    audioDenoiseTasks: Map<String, AudioDenoiseTask>,
     onDismiss: () -> Unit,
     onShare: (RecordingEntry) -> Unit,
     onExport: (RecordingEntry) -> Unit,
@@ -1790,6 +1908,7 @@ private fun VideoPlaybackScreen(
     val context = LocalContext.current
     val activity = context.findActivity()
     val audioDenoiseManager = remember { AudioDenoiseManager.get(context) }
+    val audioDenoiseTasks by audioDenoiseManager.tasks.collectAsStateWithLifecycle()
     val player = remember {
         ExoPlayer.Builder(context).build().apply {
             playWhenReady = true
@@ -2708,4 +2827,5 @@ private fun RecordingDowngradeReason.label(): String = when (this) {
 }
 
 private const val RECORDING_STORAGE_ESTIMATE_REFRESH_MILLIS = 15_000L
+private const val THUMBNAIL_IDLE_LOAD_DELAY_MILLIS = 150L
 private const val HDR_HEADROOM_RATIO = 2f

@@ -103,12 +103,31 @@ class AudioDenoiseManager private constructor(
     }
 
     fun enqueueExisting(entries: List<RecordingEntry>) {
-        entries
+        val newEntries = entries
             .asSequence()
             .filter { it.audioEnabled }
             .filter { _tasks.value[it.id] == null }
             .sortedBy { it.startedAtMillis }
-            .forEach(::enqueueAutomatically)
+            .toList()
+        if (newEntries.isEmpty()) {
+            return
+        }
+        val newTasks = newEntries.associate { entry ->
+            entry.id to AudioDenoiseTask(
+                recordingId = entry.id,
+                status = AudioDenoiseStatus.Pending,
+                processorVersion = CURRENT_AUDIO_DENOISE_VERSION,
+                detail = "等待 App 可见、屏幕亮起且录制停止后分析",
+            )
+        }
+        persistTasks(_tasks.value + newTasks)
+        newEntries.forEach { entry ->
+            eventLogger.log(
+                event = "audio_denoise_enqueued",
+                fields = mapOf("entryId" to entry.id, "source" to "automatic_existing"),
+            )
+        }
+        reevaluateQueue()
     }
 
     fun requestManually(recordingId: String, forceProcessing: Boolean = false) {
@@ -230,9 +249,11 @@ class AudioDenoiseManager private constructor(
 
     private suspend fun process(queuedTask: AudioDenoiseTask) {
         val task = queuedTask.copy(attemptCount = queuedTask.attemptCount + 1)
-        val entry = repository.findById(task.recordingId)
+        val entry = withContext(Dispatchers.IO) {
+            repository.findById(task.recordingId)
+        }
             ?: error("视频记录不存在或已被删除")
-        check(entry.file.exists()) { "视频文件不存在" }
+        check(withContext(Dispatchers.IO) { entry.file.exists() }) { "视频文件不存在" }
         check(entry.audioEnabled) { "该视频没有录制音频" }
         updateTask(
             task.copy(
@@ -294,7 +315,10 @@ class AudioDenoiseManager private constructor(
                 AudioNoiseClassification.Noise -> Unit
             }
         }
-        check(entry.file.parentFile?.usableSpace.orZero() > entry.file.length() + MIN_FREE_SPACE_BYTES) {
+        val hasEnoughSpace = withContext(Dispatchers.IO) {
+            entry.file.parentFile?.usableSpace.orZero() > entry.file.length() + MIN_FREE_SPACE_BYTES
+        }
+        check(hasEnoughSpace) {
             "可用空间不足，无法安全生成降噪临时文件"
         }
         updateTask(
@@ -305,12 +329,16 @@ class AudioDenoiseManager private constructor(
                 updatedAtMillis = System.currentTimeMillis(),
             ),
         )
-        val temporaryFile = createTemporaryFile(entry)
+        val temporaryFile = withContext(Dispatchers.IO) {
+            createTemporaryFile(entry)
+        }
         activeTemporaryFile = temporaryFile
         transform(entry.file, temporaryFile, analysis, entry.id)
         validateOutput(entry.file, temporaryFile)
         replaceAtomically(source = entry.file, replacement = temporaryFile)
-        repository.update(entry.copy(sizeBytes = entry.file.length()))
+        withContext(Dispatchers.IO) {
+            repository.update(entry.copy(sizeBytes = entry.file.length()))
+        }
         activeTemporaryFile = null
         updateTask(
             task.copy(
@@ -476,8 +504,13 @@ class AudioDenoiseManager private constructor(
     }
 
     private fun updateTask(task: AudioDenoiseTask) {
-        val next = _tasks.value.toMutableMap().apply { put(task.recordingId, task) }
-        persistTasks(next)
+        val current = _tasks.value
+        val next = current.toMutableMap().apply { put(task.recordingId, task) }.toMap()
+        storage.encode(taskKey(task.recordingId), task.toJson())
+        if (task.recordingId !in current) {
+            storage.encode(KEY_IDS, next.keys.joinToString(","))
+        }
+        _tasks.value = next
     }
 
     private fun recoverOrphanedRunningTasks() {
