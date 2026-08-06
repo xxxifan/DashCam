@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.ContentValues
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.res.Configuration
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
@@ -27,6 +28,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -34,6 +39,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -44,10 +50,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -69,7 +77,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -112,10 +119,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -244,6 +254,7 @@ private fun DashCamApp(
         ),
     ) {
         val context = LocalContext.current
+        val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
         val activity = remember(context) { context.findActivity() }
         val deviceDisplayName = remember(context) { DeviceDisplayNameResolver.displayName(context) }
         val appScope = rememberCoroutineScope()
@@ -584,38 +595,19 @@ private fun DashCamApp(
             }
             Scaffold(
                 topBar = {
-                    AppTopBar(
-                        isRecording = uiState.isRecording,
-                        deviceDisplayName = deviceDisplayName,
-                    )
-                },
-                bottomBar = {
-                    NavigationBar {
-                        NavigationBarItem(
-                            selected = selectedTab == 0,
-                            onClick = { selectedTab = 0 },
-                            icon = { Icon(Icons.Filled.Movie, contentDescription = null) },
-                            label = { Text("录制") },
-                        )
-                        NavigationBarItem(
-                            selected = selectedTab == 1,
-                            onClick = { selectedTab = 1 },
-                            icon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
-                            label = { Text("视频") },
-                        )
-                        NavigationBarItem(
-                            selected = selectedTab == 2,
-                            onClick = { selectedTab = 2 },
-                            icon = { Icon(Icons.Filled.Devices, contentDescription = null) },
-                            label = { Text("设备") },
-                        )
-                        NavigationBarItem(
-                            selected = selectedTab == 3,
-                            onClick = { selectedTab = 3 },
-                            icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                            label = { Text("设置") },
+                    if (!isLandscape) {
+                        AppTopBar(
+                            isRecording = uiState.isRecording,
+                            deviceDisplayName = deviceDisplayName,
                         )
                     }
+                },
+                bottomBar = {
+                    CompactNavigationBar(
+                        selectedTab = selectedTab,
+                        isLandscape = isLandscape,
+                        onTabSelected = { selectedTab = it },
+                    )
                 },
             ) { padding ->
                 val recordingSettings = uiState.activeSettings ?: settings
@@ -630,6 +622,7 @@ private fun DashCamApp(
                         settings = recordingSettings,
                         storageEstimate = storageEstimate,
                         previewEnabled = previewEnabled,
+                        isLandscape = isLandscape,
                         onEnablePreview = { previewEnabled = true },
                         onStart = {
                             if (context.hasRecordingPermissions()) {
@@ -712,6 +705,65 @@ private fun DashCamApp(
     }
 }
 
+@Composable
+private fun CompactNavigationBar(
+    selectedTab: Int,
+    isLandscape: Boolean,
+    onTabSelected: (Int) -> Unit,
+) {
+    if (!isLandscape) {
+        NavigationBar {
+            NavigationBarItem(
+                selected = selectedTab == 0,
+                onClick = { onTabSelected(0) },
+                icon = { Icon(Icons.Filled.Movie, contentDescription = null) },
+                label = { Text("录制") },
+            )
+            NavigationBarItem(
+                selected = selectedTab == 1,
+                onClick = { onTabSelected(1) },
+                icon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
+                label = { Text("视频") },
+            )
+            NavigationBarItem(
+                selected = selectedTab == 2,
+                onClick = { onTabSelected(2) },
+                icon = { Icon(Icons.Filled.Devices, contentDescription = null) },
+                label = { Text("设备") },
+            )
+            NavigationBarItem(
+                selected = selectedTab == 3,
+                onClick = { onTabSelected(3) },
+                icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                label = { Text("设置") },
+            )
+        }
+        return
+    }
+
+    NavigationBar(
+        modifier = Modifier
+            .navigationBarsPadding()
+            .height(56.dp),
+        windowInsets = WindowInsets(0, 0, 0, 0),
+    ) {
+        listOf("录制", "视频", "设备", "设置").forEachIndexed { index, label ->
+            val selected = selectedTab == index
+            NavigationBarItem(
+                selected = selected,
+                onClick = { onTabSelected(index) },
+                icon = {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                },
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AppTopBar(
@@ -744,67 +796,79 @@ private fun RecordingHome(
     settings: RecordingSettings,
     storageEstimate: RecordingStorageEstimate,
     previewEnabled: Boolean,
+    isLandscape: Boolean,
     onEnablePreview: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    LazyColumn(
+    BoxWithConstraints(
         modifier = Modifier
             .padding(padding)
             .fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item {
-            CameraPreviewCard(
-                isRecording = isRecording,
-                settings = settings,
-                previewEnabled = previewEnabled,
-                onEnablePreview = onEnablePreview,
-            )
+        val landscapePreviewMaxHeight = if (isLandscape) {
+            (maxHeight - RECORDING_HOME_VERTICAL_CONTENT_PADDING).coerceAtLeast(PREVIEW_COLLAPSED_HEIGHT)
+        } else {
+            null
         }
-        item {
-            RecordingStatusCard(
-                isRecording = isRecording,
-                stateMessage = stateMessage,
-                stopAlert = stopAlert,
-                safetyDecision = safetyDecision,
-                fallbackGuidance = fallbackGuidance,
-                settings = settings,
-                storageEstimate = storageEstimate,
-            )
-        }
-        item {
-            Button(
-                onClick = if (isRecording) onStop else onStart,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(
-                    if (isRecording) Icons.Filled.Stop else Icons.Filled.Movie,
-                    contentDescription = null,
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(RECORDING_HOME_CONTENT_PADDING),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            item {
+                CameraPreviewCard(
+                    isRecording = isRecording,
+                    settings = settings,
+                    previewEnabled = previewEnabled,
+                    maxExpandedHeight = landscapePreviewMaxHeight,
+                    onEnablePreview = onEnablePreview,
                 )
-                Spacer(Modifier.width(8.dp))
-                Text(if (isRecording) "停止录制" else "开始录制")
             }
-        }
-        item {
-            OutlinedButton(
-                onClick = onOpenSettings,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isRecording,
-            ) {
-                Icon(Icons.Filled.Settings, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("录制设置")
+            item {
+                RecordingStatusCard(
+                    isRecording = isRecording,
+                    stateMessage = stateMessage,
+                    stopAlert = stopAlert,
+                    safetyDecision = safetyDecision,
+                    fallbackGuidance = fallbackGuidance,
+                    settings = settings,
+                    storageEstimate = storageEstimate,
+                )
             }
-        }
-        item {
-            Text(
-                "开始录制后会显示常驻通知，之后你可以按电源键熄屏。建议在系统电池设置里允许 DashCam 后台运行。",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            item {
+                Button(
+                    onClick = if (isRecording) onStop else onStart,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        if (isRecording) Icons.Filled.Stop else Icons.Filled.Movie,
+                        contentDescription = null,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isRecording) "停止录制" else "开始录制")
+                }
+            }
+            item {
+                OutlinedButton(
+                    onClick = onOpenSettings,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isRecording,
+                ) {
+                    Icon(Icons.Filled.Settings, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("录制设置")
+                }
+            }
+            item {
+                Text(
+                    "开始录制后会显示常驻通知，之后你可以按电源键熄屏。建议在系统电池设置里允许 DashCam 后台运行。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -889,26 +953,36 @@ private fun RecordingStatusChips(
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        AssistChip(onClick = {}, label = { Text("${settings.resolution}${settings.frameRate}fps") })
-        AssistChip(onClick = {}, label = { Text(settings.codec.codecLabel()) })
-        AssistChip(onClick = {}, label = { Text(settings.bitratePreset.label()) })
-        AssistChip(onClick = {}, label = { Text("画质 ${if (settings.autoQualityEnabled) "自动" else "手动"}") })
-        AssistChip(onClick = {}, label = { Text(settings.dynamicRange.dynamicRangeLabel()) })
-        AssistChip(onClick = {}, label = { Text("分段 ${settings.segmentMinutes} 分钟") })
-        AssistChip(onClick = {}, label = { Text("音频 ${if (settings.audioEnabled) "开" else "关"}") })
-        AssistChip(onClick = {}, label = { Text("防抖 ${settings.stabilizationMode.label()}") })
-        AssistChip(onClick = {}, label = { Text(settings.cameraLabel) })
-        AssistChip(onClick = {}, label = { Text("裁剪 ${settings.cropZoomRatio.zoomRatioLabel()}") })
-        AssistChip(onClick = {}, label = { Text("对焦 ${settings.focusMode.label()}") })
-        AssistChip(
-            onClick = {},
-            label = { Text("剩余 ${storageEstimate.remainingBytes.formatBytes()}") },
-        )
-        AssistChip(
-            onClick = {},
-            label = { Text("预计 ${storageEstimate.estimatedRecordableSeconds.formatRecordableTime()}") },
+        CompactStatusLabel("${settings.resolution}${settings.frameRate}fps")
+        CompactStatusLabel(settings.codec.codecLabel())
+        CompactStatusLabel(settings.bitratePreset.label())
+        CompactStatusLabel("画质 ${if (settings.autoQualityEnabled) "自动" else "手动"}")
+        CompactStatusLabel(settings.dynamicRange.dynamicRangeLabel())
+        CompactStatusLabel("分段 ${settings.segmentMinutes} 分钟")
+        CompactStatusLabel("音频 ${if (settings.audioEnabled) "开" else "关"}")
+        CompactStatusLabel("防抖 ${settings.stabilizationMode.label()}")
+        CompactStatusLabel(settings.cameraLabel)
+        CompactStatusLabel("裁剪 ${settings.cropZoomRatio.zoomRatioLabel()}")
+        CompactStatusLabel("对焦 ${settings.focusMode.label()}")
+        CompactStatusLabel("剩余 ${storageEstimate.remainingBytes.formatBytes()}")
+        CompactStatusLabel("预计 ${storageEstimate.estimatedRecordableSeconds.formatRecordableTime()}")
+    }
+}
+
+@Composable
+private fun CompactStatusLabel(text: String) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
@@ -918,81 +992,125 @@ private fun CameraPreviewCard(
     isRecording: Boolean,
     settings: RecordingSettings,
     previewEnabled: Boolean,
+    maxExpandedHeight: Dp?,
     onEnablePreview: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
-    Card(modifier = Modifier.fillMaxWidth()) {
-        LaunchedEffect(previewEnabled, isRecording, previewView, settings) {
-            if (!previewEnabled || isRecording) {
-                if (previewView != null) {
-                    PreviewController.unbind(context)
-                }
-                previewView = null
-            } else {
-                previewView?.let {
-                    it.implementationMode = settings.previewImplementationMode()
-                    it.applyHdrHeadroom(settings.dynamicRange.isHdrDynamicRange())
-                    PreviewController.bind(context, lifecycleOwner, it, settings)
-                    it.applyHdrHeadroomAfterLayout(settings.dynamicRange.isHdrDynamicRange())
-                }
-            }
-        }
-        DisposableEffect(Unit) {
-            onDispose {
-                if (previewView != null) {
-                    PreviewController.unbind(context)
-                }
-            }
-        }
-        if (isRecording) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "录制中，预览已暂停以保证锁屏录制稳定",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            return@Card
-        }
-        if (!previewEnabled) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f),
-                contentAlignment = Alignment.Center,
-            ) {
-                Button(onClick = onEnablePreview) {
-                    Text("开启预览")
-                }
-            }
-            return@Card
-        }
-        AndroidView(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 9f),
-            factory = {
-                PreviewView(it).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                    )
-                    implementationMode = settings.previewImplementationMode()
-                    applyHdrHeadroom(settings.dynamicRange.isHdrDynamicRange())
-                    previewView = this
-                }
-            },
-            update = {
-                it.implementationMode = settings.previewImplementationMode()
-                it.applyHdrHeadroomAfterLayout(settings.dynamicRange.isHdrDynamicRange())
-            },
+    var previewReady by remember { mutableStateOf(!isRecording) }
+    val previewExpansion = remember {
+        Animatable(if (isRecording) 0f else 1f)
+    }
+
+    LaunchedEffect(isRecording) {
+        previewReady = false
+        previewExpansion.animateTo(
+            targetValue = if (isRecording) 0f else 1f,
+            animationSpec = tween(
+                durationMillis = PREVIEW_RESIZE_ANIMATION_MILLIS,
+                easing = FastOutSlowInEasing,
+            ),
         )
+        previewReady = !isRecording
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        val naturalExpandedHeight = maxWidth * 9f / 16f
+        val expandedHeight = maxExpandedHeight?.let { maxHeight ->
+            minOf(naturalExpandedHeight, maxHeight)
+        } ?: naturalExpandedHeight
+        val previewWidth = (expandedHeight * 16f / 9f).coerceAtMost(maxWidth)
+        val previewHeight = lerp(
+            start = PREVIEW_COLLAPSED_HEIGHT,
+            stop = expandedHeight,
+            fraction = previewExpansion.value,
+        )
+
+        Card(
+            modifier = Modifier
+                .width(previewWidth)
+                .height(previewHeight),
+        ) {
+            LaunchedEffect(previewEnabled, previewReady, previewView, settings) {
+                if (!previewEnabled || !previewReady) {
+                    if (previewView != null) {
+                        PreviewController.unbind(context)
+                    }
+                    previewView = null
+                } else {
+                    previewView?.let {
+                        it.implementationMode = settings.previewImplementationMode()
+                        it.applyHdrHeadroom(settings.dynamicRange.isHdrDynamicRange())
+                        PreviewController.bind(context, lifecycleOwner, it, settings)
+                        it.applyHdrHeadroomAfterLayout(settings.dynamicRange.isHdrDynamicRange())
+                    }
+                }
+            }
+            DisposableEffect(Unit) {
+                onDispose {
+                    if (previewView != null) {
+                        PreviewController.unbind(context)
+                    }
+                }
+            }
+            if (isRecording) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "录制中，预览已暂停",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                return@Card
+            }
+            if (!previewEnabled) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Button(onClick = onEnablePreview) {
+                        Text("开启预览")
+                    }
+                }
+                return@Card
+            }
+            if (!previewReady) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "正在展开预览…",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                return@Card
+            }
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = {
+                    PreviewView(it).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                        implementationMode = settings.previewImplementationMode()
+                        applyHdrHeadroom(settings.dynamicRange.isHdrDynamicRange())
+                        previewView = this
+                    }
+                },
+                update = {
+                    it.implementationMode = settings.previewImplementationMode()
+                    it.applyHdrHeadroomAfterLayout(settings.dynamicRange.isHdrDynamicRange())
+                },
+            )
+        }
     }
 }
 
@@ -2831,4 +2949,8 @@ private fun RecordingDowngradeReason.label(): String = when (this) {
 
 private const val RECORDING_STORAGE_ESTIMATE_REFRESH_MILLIS = 15_000L
 private const val THUMBNAIL_IDLE_LOAD_DELAY_MILLIS = 150L
+private const val PREVIEW_RESIZE_ANIMATION_MILLIS = 320
 private const val HDR_HEADROOM_RATIO = 2f
+private val RECORDING_HOME_CONTENT_PADDING = 16.dp
+private val RECORDING_HOME_VERTICAL_CONTENT_PADDING = RECORDING_HOME_CONTENT_PADDING * 2
+private val PREVIEW_COLLAPSED_HEIGHT = 72.dp
