@@ -283,7 +283,10 @@ private fun DashCamApp(
         }
         var settings by remember { mutableStateOf(settingsStore.get()) }
         var stopAlert by remember { mutableStateOf(alertStore.getLastStopAlert()) }
-        var playbackEntry by remember { mutableStateOf<RecordingEntry?>(null) }
+        var playbackEntryId by rememberSaveable { mutableStateOf<String?>(null) }
+        val playbackEntry = remember(playbackEntryId, entries) {
+            playbackEntryId?.let { entryId -> entries.firstOrNull { it.id == entryId } }
+        }
         var storageEstimate by remember {
             mutableStateOf(
                 RecordingStorageEstimator.estimate(
@@ -554,7 +557,7 @@ private fun DashCamApp(
             VideoPlaybackScreen(
                 entry = activePlaybackEntry,
                 entries = entries,
-                onDismiss = { playbackEntry = null },
+                onDismiss = { playbackEntryId = null },
                 onShare = shareRecording,
                 onExport = exportRecording,
                 onRequestDenoise = { entry, force ->
@@ -649,7 +652,7 @@ private fun DashCamApp(
                         audioDenoiseManager = audioDenoiseManager,
                         isRecording = uiState.isRecording,
                         thumbnailManager = thumbnailManager,
-                        onOpenPlayback = { playbackEntry = it },
+                        onOpenPlayback = { playbackEntryId = it.id },
                         onStopRecording = {
                             alertStore.clearLastStopAlert()
                             stopAlert = null
