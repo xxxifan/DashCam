@@ -38,8 +38,8 @@ android {
         applicationId = "com.xxxifan.dashcam"
         minSdk = 36
         targetSdk = 36
-        versionCode = 2217
-        versionName = "0.2.217"
+        versionCode = 3208
+        versionName = "0.3.208"
         buildConfigField("String", "GITHUB_REPOSITORY", "\"xxxifan/DashCam\"")
 
         ndk {
