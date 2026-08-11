@@ -203,8 +203,12 @@ fun DeviceScreen(
         RemoteVideoPlaybackScreen(
             media = media,
             mediaList = state.remoteMedia,
+            isSaving = state.isBusy,
             onPrevious = { previous -> manager.play(previous) },
             onNext = { next -> manager.play(next) },
+            onSave = { selected, option ->
+                scope.launch { manager.download(selected, option) }
+            },
             onDismiss = { scope.launch { manager.stopPlayer() } },
             onError = { source, error -> manager.reportPlaybackError(source, error) },
             onDiagnostic = { source, event, fields ->
@@ -300,8 +304,10 @@ fun DeviceScreen(
 internal fun RemoteVideoPlaybackScreen(
     media: RemoteDeviceMedia,
     mediaList: List<RemoteDeviceMedia>,
+    isSaving: Boolean,
     onPrevious: (RemoteDeviceMedia) -> Unit,
     onNext: (RemoteDeviceMedia) -> Unit,
+    onSave: (RemoteDeviceMedia, DeviceDownloadOption) -> Unit,
     onDismiss: () -> Unit,
     onError: (DevicePlaybackSource, Throwable) -> Unit,
     onDiagnostic: (DevicePlaybackSource, String, Map<String, Any?>) -> Unit,
@@ -309,12 +315,24 @@ internal fun RemoteVideoPlaybackScreen(
     val context = LocalContext.current
     val activity = context.findActivity()
     var isLandscape by remember(media.id) { mutableStateOf<Boolean?>(null) }
+    var showSaveOptions by remember(media.id) { mutableStateOf(false) }
     val playableMedia = remember(mediaList) {
         mediaList.filter { it.format != RemoteMediaFormat.Jpeg }
     }
     val currentIndex = playableMedia.indexOfFirst { it.id == media.id }
     val previous = playableMedia.getOrNull(currentIndex - 1)
     val next = playableMedia.getOrNull(currentIndex + 1)
+
+    if (showSaveOptions) {
+        SaveRemoteMediaDialog(
+            media = media,
+            onDismiss = { showSaveOptions = false },
+            onSave = { option ->
+                showSaveOptions = false
+                onSave(media, option)
+            },
+        )
+    }
 
     BackHandler(onBack = onDismiss)
     DisposableEffect(activity, isLandscape) {
@@ -379,6 +397,18 @@ internal fun RemoteVideoPlaybackScreen(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+                IconButton(
+                    onClick = {
+                        if (media.format == RemoteMediaFormat.TransportStream) {
+                            showSaveOptions = true
+                        } else {
+                            onSave(media, DeviceDownloadOption.OriginalOnly)
+                        }
+                    },
+                    enabled = !isSaving,
+                ) {
+                    Icon(Icons.Filled.CloudDownload, contentDescription = "保存", tint = Color.White)
                 }
             }
             Row(
@@ -764,6 +794,9 @@ private fun DeviceFilesPage(
     }
     var expandedMediaId by remember(state.activeDevice?.id) { mutableStateOf<String?>(null) }
     var selectedTimelineMediaId by remember(state.activeDevice?.id) { mutableStateOf<String?>(null) }
+    var pendingSaveMedia by remember(state.activeDevice?.id) {
+        mutableStateOf<RemoteDeviceMedia?>(null)
+    }
     val showTimeline = selectedCategory != RemoteMediaCategory.Photo && state.remoteMedia.isNotEmpty()
     val firstMediaItemIndex = if (showTimeline) 3 else 2
 
@@ -776,6 +809,17 @@ private fun DeviceFilesPage(
         expandedMediaId = null
         selectedTimelineMediaId = null
         manager.loadRemoteMedia(selectedCategory)
+    }
+
+    pendingSaveMedia?.let { media ->
+        SaveRemoteMediaDialog(
+            media = media,
+            onDismiss = { pendingSaveMedia = null },
+            onSave = { option ->
+                pendingSaveMedia = null
+                scope.launch { manager.download(media, option) }
+            },
+        )
     }
 
     LazyColumn(
@@ -890,19 +934,62 @@ private fun DeviceFilesPage(
                     selectedTimelineMediaId = media.id
                 },
                 onPlay = { manager.play(media) },
-                onDownload = { scope.launch { manager.download(media) } },
+                onDownload = {
+                    if (media.format == RemoteMediaFormat.TransportStream) {
+                        pendingSaveMedia = media
+                    } else {
+                        scope.launch {
+                            manager.download(media, DeviceDownloadOption.OriginalOnly)
+                        }
+                    }
+                },
             )
         }
         state.downloadedMedia?.let { downloaded ->
             item {
                 Text(
-                    "已保存 ${downloaded.file.name}",
+                    if (downloaded.convertedToMp4) {
+                        "已转换并保存 ${downloaded.fileName}"
+                    } else {
+                        "已保存 ${downloaded.fileName}"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFF15803D),
                 )
             }
         }
     }
+}
+
+@Composable
+private fun SaveRemoteMediaDialog(
+    media: RemoteDeviceMedia,
+    onDismiss: () -> Unit,
+    onSave: (DeviceDownloadOption) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("保存视频") },
+        text = {
+            Text(
+                "${media.name}\n\n可直接保存原始 TS，或无损转封装为更兼容系统相册的 MP4。" +
+                    "选择 MP4 时，下载的临时 TS 会在转换完成后删除。",
+            )
+        },
+        confirmButton = {
+            Button(onClick = { onSave(DeviceDownloadOption.ConvertToMp4) }) {
+                Text("转换并保存 MP4")
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onDismiss) { Text("取消") }
+                TextButton(onClick = { onSave(DeviceDownloadOption.OriginalOnly) }) {
+                    Text("仅保存 TS")
+                }
+            }
+        },
+    )
 }
 
 @Composable

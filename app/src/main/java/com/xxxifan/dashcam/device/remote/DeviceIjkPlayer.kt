@@ -132,6 +132,12 @@ private class DiagnosticGSYVideoPlayer(
 
     override fun onInfo(what: Int, extra: Int) {
         super.onInfo(what, extra)
+        if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+            if (currentState == CURRENT_STATE_PLAYING_BUFFERING_START) {
+                setStateAndUi(CURRENT_STATE_PLAYING)
+            }
+            mLoadingProgressBar?.visibility = View.INVISIBLE
+        }
         onDiagnostic(
             if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
                 "device_ijk_first_frame_rendered"

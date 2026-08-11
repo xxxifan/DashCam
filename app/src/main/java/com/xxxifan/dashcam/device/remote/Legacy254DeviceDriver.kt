@@ -137,7 +137,8 @@ class Legacy254DeviceDriver : DeviceProtocolDriver {
                 file = destination,
                 outputFormat = media.format,
                 postProcessingDescription = when (media.format) {
-                    RemoteMediaFormat.TransportStream -> "设备策略：保留原始 TS 容器，避免通用层错误转码"
+                    RemoteMediaFormat.TransportStream ->
+                        "设备策略：保存时可选择原始 TS 或无损转封装 MP4"
                     else -> "设备策略：保留设备原始文件"
                 },
             ).also { result ->

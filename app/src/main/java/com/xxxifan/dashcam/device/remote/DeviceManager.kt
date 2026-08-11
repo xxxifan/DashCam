@@ -1,5 +1,8 @@
+@file:androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
+
 package com.xxxifan.dashcam.device.remote
 
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -8,7 +11,14 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Environment
+import android.provider.MediaStore
+import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.Transformer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -23,10 +33,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URL
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class DeviceManager private constructor(
     context: Context,
@@ -466,21 +479,65 @@ class DeviceManager private constructor(
         }
     }
 
-    suspend fun download(media: RemoteDeviceMedia) =
+    suspend fun download(
+        media: RemoteDeviceMedia,
+        option: DeviceDownloadOption = DeviceDownloadOption.OriginalOnly,
+    ) =
         runSessionOperation("正在下载 ${media.name}…") { session ->
             val destination = File(
-                appContext.getExternalFilesDir(Environment.DIRECTORY_MOVIES),
-                "DashCam/devices/${session.device.id}",
+                appContext.cacheDir,
+                "device_downloads/${session.device.id}",
             )
             val result = session.download(media, destination) { progress ->
                 _state.update { it.copy(downloadProgress = progress) }
             }
-            _state.update {
-                it.copy(
-                    downloadProgress = null,
-                    downloadedMedia = result,
-                    statusMessage = "已下载到 ${result.file.absolutePath}",
-                )
+            var convertedFile: File? = null
+            try {
+                val convertToMp4 =
+                    result.outputFormat == RemoteMediaFormat.TransportStream &&
+                        option == DeviceDownloadOption.ConvertToMp4
+                val publishedFile: File
+                val publishedFormat: RemoteMediaFormat
+                if (convertToMp4) {
+                    _state.update {
+                        it.copy(
+                            downloadProgress = null,
+                            statusMessage = "TS 下载完成，正在转换 MP4…",
+                        )
+                    }
+                    convertedFile = File(
+                        result.file.parentFile,
+                        "${result.file.nameWithoutExtension}.mp4",
+                    ).also { it.delete() }
+                    remuxToMp4(result.file, convertedFile)
+                    publishedFile = convertedFile
+                    publishedFormat = RemoteMediaFormat.Mp4
+                } else {
+                    publishedFile = result.file
+                    publishedFormat = result.outputFormat
+                }
+                val publicUri = publishDownload(publishedFile, publishedFormat)
+                _state.update {
+                    it.copy(
+                        downloadProgress = null,
+                        downloadedMedia = SavedDeviceMedia(
+                            source = result.source,
+                            outputFormat = publishedFormat,
+                            publicUri = publicUri,
+                            publicRelativePath = "Downloads/DashCam/${publishedFile.name}",
+                            fileName = publishedFile.name,
+                            convertedToMp4 = convertToMp4,
+                        ),
+                        statusMessage = if (convertToMp4) {
+                            "已转换并保存 MP4 到 Downloads/DashCam"
+                        } else {
+                            "已保存到 Downloads/DashCam"
+                        },
+                    )
+                }
+            } finally {
+                result.file.delete()
+                convertedFile?.delete()
             }
         }
 
@@ -509,6 +566,12 @@ class DeviceManager private constructor(
         event: String,
         fields: Map<String, Any?> = emptyMap(),
     ) {
+        if (
+            event == "device_ijk_first_frame_rendered" &&
+            _state.value.previewSource?.uri == source.uri
+        ) {
+            _state.update { it.copy(statusMessage = "实时画面已连接") }
+        }
         scope.launch {
             diagnostics.log(
                 event,
@@ -520,6 +583,77 @@ class DeviceManager private constructor(
             )
         }
     }
+
+    private suspend fun publishDownload(
+        file: File,
+        format: RemoteMediaFormat,
+    ): android.net.Uri = withContext(Dispatchers.IO) {
+        val resolver = appContext.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, file.name)
+            put(MediaStore.MediaColumns.MIME_TYPE, format.mimeType())
+            put(
+                MediaStore.MediaColumns.RELATIVE_PATH,
+                "${Environment.DIRECTORY_DOWNLOADS}/DashCam",
+            )
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw DeviceProtocolException("无法在 Downloads/DashCam 创建文件")
+        try {
+            resolver.openOutputStream(uri, "w")?.use { output ->
+                file.inputStream().use { input -> input.copyTo(output) }
+            } ?: throw DeviceProtocolException("无法写入 Downloads/DashCam")
+            resolver.update(
+                uri,
+                ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },
+                null,
+                null,
+            )
+            uri
+        } catch (error: Throwable) {
+            resolver.delete(uri, null, null)
+            throw error
+        }
+    }
+
+    private suspend fun remuxToMp4(source: File, output: File) =
+        withContext(Dispatchers.Main.immediate) {
+            suspendCancellableCoroutine { continuation ->
+                val transformer = Transformer.Builder(appContext)
+                    .addListener(
+                        object : Transformer.Listener {
+                            override fun onCompleted(
+                                composition: Composition,
+                                exportResult: ExportResult,
+                            ) {
+                                if (continuation.isActive) {
+                                    continuation.resume(Unit)
+                                }
+                            }
+
+                            override fun onError(
+                                composition: Composition,
+                                exportResult: ExportResult,
+                                exportException: ExportException,
+                            ) {
+                                if (continuation.isActive) {
+                                    continuation.resumeWithException(exportException)
+                                }
+                            }
+                        },
+                    )
+                    .build()
+                continuation.invokeOnCancellation {
+                    transformer.cancel()
+                    output.delete()
+                }
+                transformer.start(
+                    EditedMediaItem.Builder(MediaItem.fromUri(android.net.Uri.fromFile(source))).build(),
+                    output.absolutePath,
+                )
+            }
+        }
 
     suspend fun closeActive() {
         sessionMutex.withLock {

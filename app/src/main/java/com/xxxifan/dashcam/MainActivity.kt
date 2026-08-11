@@ -581,8 +581,12 @@ private fun DashCamApp(
             RemoteVideoPlaybackScreen(
                 media = media,
                 mediaList = remoteDeviceState.remoteMedia,
+                isSaving = remoteDeviceState.isBusy,
                 onPrevious = { previous -> deviceManager.play(previous) },
                 onNext = { next -> deviceManager.play(next) },
+                onSave = { selected, option ->
+                    appScope.launch { deviceManager.download(selected, option) }
+                },
                 onDismiss = { appScope.launch { deviceManager.stopPlayer() } },
                 onError = { source, error -> deviceManager.reportPlaybackError(source, error) },
                 onDiagnostic = { source, event, fields ->

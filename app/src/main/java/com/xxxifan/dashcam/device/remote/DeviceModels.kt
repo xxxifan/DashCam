@@ -152,12 +152,34 @@ data class DeviceDownloadProgress(
             ?.let { (downloadedBytes.toDouble() / it.toDouble()).toFloat().coerceIn(0f, 1f) }
 }
 
+enum class DeviceDownloadOption {
+    OriginalOnly,
+    ConvertToMp4,
+}
+
 data class DownloadedDeviceMedia(
     val source: RemoteDeviceMedia,
     val file: File,
     val outputFormat: RemoteMediaFormat,
     val postProcessingDescription: String,
 )
+
+data class SavedDeviceMedia(
+    val source: RemoteDeviceMedia,
+    val outputFormat: RemoteMediaFormat,
+    val publicUri: Uri,
+    val publicRelativePath: String,
+    val fileName: String,
+    val convertedToMp4: Boolean,
+)
+
+internal fun RemoteMediaFormat.mimeType(): String = when (this) {
+    RemoteMediaFormat.Mp4 -> "video/mp4"
+    RemoteMediaFormat.Mov -> "video/quicktime"
+    RemoteMediaFormat.TransportStream -> "video/mp2t"
+    RemoteMediaFormat.Jpeg -> "image/jpeg"
+    RemoteMediaFormat.Unknown -> "application/octet-stream"
+}
 
 data class DeviceDiagnosticRecord(
     val timestampMillis: Long,
@@ -208,7 +230,7 @@ data class DeviceUiState(
     val supportedCategories: Set<RemoteMediaCategory> = emptySet(),
     val playbackMedia: RemoteDeviceMedia? = null,
     val downloadProgress: DeviceDownloadProgress? = null,
-    val downloadedMedia: DownloadedDeviceMedia? = null,
+    val downloadedMedia: SavedDeviceMedia? = null,
     val diagnostics: List<DeviceDiagnosticRecord> = emptyList(),
     val diagnosticFile: File? = null,
 )
