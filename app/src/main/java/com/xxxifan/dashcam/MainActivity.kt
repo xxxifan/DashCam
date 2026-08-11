@@ -183,6 +183,7 @@ import com.xxxifan.dashcam.safety.RecordingSafetyDecision
 import com.xxxifan.dashcam.storage.LoopStorageManager
 import com.xxxifan.dashcam.storage.RecordingStorageEstimate
 import com.xxxifan.dashcam.storage.RecordingStorageEstimator
+import com.xxxifan.dashcam.update.AppUpdateSection
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
@@ -1515,6 +1516,9 @@ private fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+        item {
+            AppUpdateSection()
         }
     }
 }
