@@ -77,6 +77,8 @@ cd DashCam
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+Release 构建需要独立私有签名密钥，并通过被忽略的本机配置或环境变量提供四个 `DASHCAM_RELEASE_*` 配置项。签名凭据不得提交到 Git。
+
 ### 安装
 
 连接已启用 USB 调试的 Android 设备后执行：
@@ -185,7 +187,7 @@ files/device_logs/device-events-YYYYMMDD.log
 - CameraX 的目标帧率是请求值，不代表所有设备都能严格输出相同帧率。
 - HDR、防抖、物理镜头和 H.265 等能力均依赖设备支持。
 - 外部记录仪目前仅支持艾尔优 DC1。
-- 项目暂未提供 Play Store 发布配置、Release 签名配置和正式发行包。
+- Release 构建已启用 R8 代码混淆、优化和资源收缩，项目暂未提供 Play Store 发布配置。
 - 最低系统版本为 API 36，旧版 Android 设备无法直接安装。
 
 ## 路线图

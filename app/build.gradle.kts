@@ -1,7 +1,34 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val localProperties = Properties().apply {
+    val localPropertiesFile = rootProject.file("local.properties")
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.inputStream().use(::load)
+    }
+}
+
+fun releaseSigningValue(name: String): String? =
+    providers.gradleProperty(name).orNull
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: System.getenv(name)?.trim()?.takeIf(String::isNotEmpty)
+        ?: localProperties.getProperty(name)?.trim()?.takeIf(String::isNotEmpty)
+
+val releaseStoreFile = releaseSigningValue("DASHCAM_RELEASE_STORE_FILE")
+val releaseStorePassword = releaseSigningValue("DASHCAM_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = releaseSigningValue("DASHCAM_RELEASE_KEY_ALIAS")
+val releaseKeyPassword = releaseSigningValue("DASHCAM_RELEASE_KEY_PASSWORD")
+val releaseSigningReady = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { it != null }
 
 android {
     namespace = "com.xxxifan.dashcam"
@@ -11,7 +38,7 @@ android {
         applicationId = "com.xxxifan.dashcam"
         minSdk = 36
         targetSdk = 36
-        versionCode = 1
+        versionCode = 1000
         versionName = "0.1.0"
 
         ndk {
@@ -20,11 +47,42 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
+    }
+
+    signingConfigs {
+        if (releaseSigningReady) {
+            create("release") {
+                storeFile = rootProject.file(requireNotNull(releaseStoreFile))
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            signingConfig = signingConfigs.findByName("release")
+        }
     }
 
     kotlin {
         jvmToolchain(17)
+    }
+}
+
+tasks.matching { task ->
+    task.name == "packageRelease" || task.name == "bundleRelease"
+}.configureEach {
+    doFirst {
+        check(releaseSigningReady) {
+            "Release signing is not configured. Set DASHCAM_RELEASE_* values in local.properties, Gradle properties, or environment variables."
+        }
     }
 }
 

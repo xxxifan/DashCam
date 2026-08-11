@@ -20,7 +20,6 @@ import android.os.BatteryManager
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
-import android.util.Log
 import android.util.Range
 import android.util.Size
 import androidx.camera.camera2.interop.Camera2CameraInfo
@@ -68,6 +67,7 @@ import com.xxxifan.dashcam.data.RecordingSettingsStore
 import com.xxxifan.dashcam.data.RecordingThumbnailManager
 import com.xxxifan.dashcam.data.StabilizationMode
 import com.xxxifan.dashcam.data.coerceCropZoomRatio
+import com.xxxifan.dashcam.logging.ReleaseSafeLog as Log
 import com.xxxifan.dashcam.safety.DefaultRecordingSafetyPolicy
 import com.xxxifan.dashcam.safety.RecordingHealthSnapshot
 import com.xxxifan.dashcam.safety.RecordingSafetyDecision

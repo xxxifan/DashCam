@@ -13,7 +13,6 @@ import android.media.EncoderProfiles
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaRecorder
-import android.util.Log
 import android.util.Range
 import android.util.Size
 import androidx.camera.core.CameraInfo
@@ -26,6 +25,7 @@ import androidx.camera.video.VideoCapabilities
 import androidx.camera.video.VideoCapture
 import androidx.core.content.getSystemService
 import com.xxxifan.dashcam.data.StabilizationMode
+import com.xxxifan.dashcam.logging.ReleaseSafeLog as Log
 import kotlin.math.roundToInt
 
 class CameraCapabilitiesRepository(

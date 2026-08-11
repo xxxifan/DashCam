@@ -77,6 +77,8 @@ The debug APK is generated at:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+Release builds require a private signing key and the four `DASHCAM_RELEASE_*` values in ignored local configuration or environment variables. Signing credentials must never be committed.
+
 ### Install
 
 After connecting an Android device with USB debugging enabled, run:
@@ -186,7 +188,7 @@ Logs are never uploaded automatically. Before attaching logs to an issue, check 
 - CameraX target frame rates are requests and do not guarantee that every device will produce the exact requested frame rate.
 - HDR, stabilization, physical lens selection, and H.265 support depend on device capabilities.
 - Only the Aieryou DC1 external dash cam is currently supported.
-- The project does not yet include Play Store publishing configuration, release signing configuration, or an official release package.
+- The release build enables R8 code minification and resource shrinking. Play Store publishing configuration is not included.
 - The minimum supported system version is API 36, so older Android devices cannot install the app directly.
 
 ## Roadmap
