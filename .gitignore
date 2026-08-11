@@ -37,3 +37,7 @@ app/build/
 
 # Device media collected during diagnostics
 /disk/
+
+CLAUDE.md
+AGENT_PLAN.md
+AGENTS.md

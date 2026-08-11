@@ -1,59 +1,61 @@
 # DashCam
 
+**EN** | [CN](README_CN.md)
+
 [![Android](https://img.shields.io/badge/Android-API%2036%2B-3DDC84?logo=android&logoColor=white)](https://developer.android.com/)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.3.10-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-DashCam 是一款将 Android 手机变成行车记录仪的开源应用。它基于 CameraX 构建，提供分段录制、循环存储、自动画质、安全降档、本地视频管理和外部记录仪访问等能力。
+DashCam is an open-source app that turns an Android phone into a dashboard camera. Built with CameraX, it provides segmented recording, loop storage, automatic quality selection, safety-based quality reduction, local video management, and access to external dash cams.
 
 > [!IMPORTANT]
-> 项目目前处于早期实验阶段，主要面向自用、学习和二次开发。不同厂商对后台相机、锁屏录制、编码器和温控的限制差异较大，请务必在目标真机上充分测试后再用于实际行车场景。
+> This project is currently at an early experimental stage and is intended primarily for personal use, learning, and further development. Restrictions on background camera access, lock-screen recording, encoders, and thermal management vary significantly between manufacturers. Test the app thoroughly on your target device before using it while driving.
 
-## 主要功能
+## Features
 
-### 行车录制
+### Dash cam recording
 
-- 通过前台服务持续录制，并显示常驻通知。
-- 支持 1、2、3、5、10 分钟分段保存。
-- 达到存储配额或安全空间阈值时自动清理最旧片段。
-- 支持后置主摄、超广角镜头选择，以及 1.0x～2.0x 中心裁剪放大。
-- 可按设备能力选择 720p、1080p、4K，24、30、60 fps，以及 H.264、H.265 编码。
-- 支持 HDR、视频防抖、录音开关和节省空间、标准、高画质三档质量设置。
-- 自动画质可根据设备能力和可用空间调整分辨率、帧率、编码、质量、HDR 与防抖。
+- Records continuously through a foreground service with a persistent notification.
+- Saves recordings in 1, 2, 3, 5, or 10-minute segments.
+- Automatically removes the oldest segments when the storage quota or safe free-space threshold is reached.
+- Supports the main rear and ultra-wide cameras, with 1.0x to 2.0x center-crop zoom.
+- Supports 720p, 1080p, and 4K; 24, 30, and 60 fps; and H.264 or H.265, depending on device capabilities.
+- Supports HDR, video stabilization, optional audio, and space-saving, standard, or high-quality presets.
+- Automatic quality selection can adjust resolution, frame rate, codec, quality, HDR, and stabilization based on device capabilities and available space.
 
-### 安全与后处理
+### Safety and post-processing
 
-- 存储不足时自动清理或降低画质。
-- 监控设备温度、电量和录制管线状态，必要时提示、降档或停止录制。
-- 默认预留 10% 系统存储空间。
-- 录制结束后分析音频，仅对明确的低频风噪、共振和高频宽带噪声进行降噪处理。
-- 降噪任务仅在应用可见、屏幕亮起、未录制且未播放视频时运行，处理失败不会覆盖原视频。
+- Automatically removes old recordings or reduces quality when storage is low.
+- Monitors device temperature, battery level, and recording pipeline health, then warns, reduces quality, or stops recording when necessary.
+- Reserves 10% of system storage by default.
+- Analyzes audio after recording and applies noise reduction only for clearly detected low-frequency wind noise, resonance, and high-frequency broadband noise.
+- Noise reduction runs only while the app is visible, the screen is on, and no recording or playback is active. A processing failure never overwrites the original video.
 
-### 视频管理
+### Video management
 
-- 查看、播放和连续播放本地录像。
-- 删除单个视频或按时间批量清理。
-- 导出视频到系统媒体库 `Movies/DashCam`。
-- 通过 Android 系统分享面板分享视频。
+- Browse, play, and continuously play local recordings.
+- Delete individual videos or clean up recordings in batches by age.
+- Export videos to `Movies/DashCam` in the system media library.
+- Share videos through the Android system share sheet.
 
-### 外部记录仪
+### External dash cams
 
-- 目前支持 **艾尔优 DC1**。
-- 支持实时预览、分类读取远端录像、在线播放和断点下载。
-- 支持记录并导出设备连接与操作日志，便于定位问题。
-- 其他品牌和型号尚未适配，后续将逐步接入。
+- Currently supports the **Aieryou DC1**.
+- Provides live preview, categorized remote recording lists, online playback, and resumable downloads.
+- Records and exports device connection and operation logs for troubleshooting.
+- Other brands and models are not yet supported and will be added gradually.
 
-## 快速开始
+## Quick start
 
-### 环境要求
+### Requirements
 
-- Android Studio，或可用的 Android Gradle 命令行环境。
-- JDK 17。
-- Android SDK 36。
-- Android 设备 API 36 或更高版本。
-- 用于验证相机、编码器、发热和锁屏录制行为的真实设备。
+- Android Studio, or a working Android Gradle command-line environment.
+- JDK 17.
+- Android SDK 36.
+- An Android device running API 36 or later.
+- A physical device for validating camera, encoder, thermal, and lock-screen recording behavior.
 
-当前应用版本为 `0.1.0`，项目配置如下：
+The current app version is `0.1.0`, with the following project configuration:
 
 ```kotlin
 compileSdk = 36
@@ -61,7 +63,7 @@ minSdk = 36
 targetSdk = 36
 ```
 
-### 构建
+### Build
 
 ```powershell
 git clone https://github.com/xxxifan/DashCam.git
@@ -69,79 +71,83 @@ cd DashCam
 .\gradlew.bat assembleDebug
 ```
 
-生成的 Debug APK 位于：
+The debug APK is generated at:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### 安装
+### Install
 
-连接已启用 USB 调试的 Android 设备后执行：
+After connecting an Android device with USB debugging enabled, run:
 
 ```powershell
 .\gradlew.bat installDebug
 ```
 
-也可以使用 Android Studio 打开项目并直接运行 `app` 模块。
+You can also open the project in Android Studio and run the `app` module directly.
 
-## 使用说明
+## Usage
 
-### 首次录制
+### First recording
 
-1. 授予相机、通知等必要权限；需要录音时再授予麦克风权限。
-2. 首次使用建议从 `1080p30 + H.265 + 标准` 开始测试。
-3. 根据可用空间设置循环录制配额，并录制几个完整片段确认设备兼容性。
-4. 长时间录制时建议连接车充，并留意设备温度。
+1. Grant the required camera and notification permissions. Grant microphone permission only if audio recording is enabled.
+2. For an initial test, start with `1080p30 + H.265 + Standard`.
+3. Set a loop-recording quota based on available space, then record several complete segments to confirm device compatibility.
+4. Connect a car charger for long recordings and monitor the device temperature.
 
-如果手机镜头视角过广，可尝试 `1.2x` 或 `1.4x` 裁剪放大。如果锁屏后录制不稳定，可保持应用前台或屏幕常亮，并尝试降低帧率、关闭 HDR 或增强防抖。
+If the camera's field of view is too wide, try 1.2x or 1.4x crop zoom. If recording becomes unstable after locking the screen, keep the app in the foreground or the screen on, and try reducing the frame rate or disabling HDR or enhanced stabilization.
 
-### 连接外部记录仪
+### Connect an external dash cam
 
-1. 在 Android 系统设置中连接艾尔优 DC1 的 Wi-Fi。
-2. 打开 DashCam 底部的“设备”页面。
-3. 等待应用发现设备，然后使用实时预览、远端录像播放或下载功能。
+1. Connect to the Aieryou DC1 Wi-Fi network in Android system settings.
+2. Open the **Devices** tab in DashCam.
+3. Wait for the app to discover the device, then use live preview, remote playback, or download features.
 
-当前仅对艾尔优 DC1 提供支持，其他设备即使具有相似的连接方式，也不保证能够正常使用。
+Only the Aieryou DC1 is currently supported. Other devices are not guaranteed to work even if they use a similar connection method.
 
-## 文件存储
+## File storage
 
-手机录制的视频默认保存在应用专属外部目录：
+Videos recorded by the phone are stored in the app-specific external directory by default:
 
 ```text
 Android/data/com.xxxifan.dashcam/files/Movies/DashCam/records
 ```
 
-目录中的 `.nomedia` 文件会阻止未导出视频自动出现在系统相册。执行“导出”后，视频会复制到：
+The `.nomedia` file in this directory prevents unexported videos from appearing automatically in the system gallery. Exported videos are copied to:
 
 ```text
 Movies/DashCam
 ```
 
-外部记录仪下载的文件保存在：
+Files downloaded from an external dash cam are stored in:
 
 ```text
-Android/data/com.xxxifan.dashcam/files/Movies/DashCam/devices/<device-id>
+Downloads/DashCam
 ```
 
+`Downloads/DashCam` is a public directory that can also be accessed by other apps with permission to read system downloads.
+
+When saving TS videos from a dash cam, you can keep the original TS file or losslessly remux it to MP4 for better system gallery compatibility. The conversion process writes only the MP4 file to the public directory and removes the temporary TS file from the app cache afterward.
+
 > [!WARNING]
-> 卸载应用可能会同时删除应用专属目录中的录像。需要长期保留的视频请提前导出。
+> Unexported recordings made by the phone remain in the app-specific directory and may be deleted when the app is uninstalled. Export recordings that need to be kept long-term.
 
-## 权限说明
+## Permissions
 
-| 权限 | 用途 |
+| Permission | Purpose |
 | --- | --- |
-| 相机 | 录制视频 |
-| 麦克风 | 在开启录音时采集音频 |
-| 通知 | 显示录制中的常驻通知 |
-| 前台服务 | 在录制期间维持前台服务运行 |
-| 唤醒锁 | 尽量保持录制过程稳定 |
-| 网络与 Wi-Fi 状态 | 发现并连接外部记录仪 |
-| 网络访问 | 预览、播放和下载外部记录仪内容 |
+| Camera | Record video |
+| Microphone | Capture audio when audio recording is enabled |
+| Notifications | Display the persistent recording notification |
+| Foreground service | Keep the foreground service active while recording |
+| Wake lock | Help keep recording stable |
+| Network and Wi-Fi state | Discover and connect to external dash cams |
+| Internet | Preview, play, and download content from external dash cams |
 
-部分系统还会限制后台运行、锁屏相机或高耗电行为。建议在系统设置中允许 DashCam 后台运行，并关闭针对本应用的过度省电限制。
+Some systems also restrict background activity, lock-screen camera access, or high-power workloads. Allow DashCam to run in the background and disable overly aggressive battery optimization for the app when necessary.
 
-## 技术栈
+## Technology stack
 
 - Kotlin
 - Jetpack Compose / Material 3
@@ -151,61 +157,61 @@ Android/data/com.xxxifan.dashcam/files/Movies/DashCam/devices/<device-id>
 - Kotlin Coroutines
 - Gradle Kotlin DSL
 
-## 项目结构
+## Project structure
 
 ```text
 app/src/main/java/com/xxxifan/dashcam
-├── camera/       # 相机能力、镜头选择和预览绑定
-├── data/         # 设置、录制记录、缩略图和事件日志
-├── device/       # 设备信息与外部记录仪接入
-├── recording/    # 录制服务、画质策略、音频后处理和录制状态
-├── safety/       # 存储、温度、电量和录制管线安全策略
-├── storage/      # 循环录制空间估算和清理
+├── camera/       # Camera capabilities, lens selection, and preview binding
+├── data/         # Settings, recording metadata, thumbnails, and event logs
+├── device/       # Device information and external dash cam integration
+├── recording/    # Recording service, quality policy, audio post-processing, and recording state
+├── safety/       # Storage, temperature, battery, and recording pipeline safety policies
+├── storage/      # Loop-recording space estimation and cleanup
 └── MainActivity.kt
 ```
 
-## 诊断日志
+## Diagnostic logs
 
-应用会在私有目录写入录制事件日志，用于排查设备能力、录制参数、分段结果、空间清理和异常停止原因。外部记录仪的连接与操作日志保存在：
+The app writes recording event logs to its private directory to help diagnose device capabilities, recording parameters, segment results, storage cleanup, and abnormal stop reasons. Connection and operation logs for external dash cams are stored at:
 
 ```text
 files/device_logs/device-events-YYYYMMDD.log
 ```
 
-日志不会自动上传。提交 issue 前，请先检查日志是否包含本地文件路径、设备信息或其他不希望公开的内容。
+Logs are never uploaded automatically. Before attaching logs to an issue, check them for local file paths, device information, or anything else you do not want to disclose.
 
-## 已知限制
+## Known limitations
 
-- 锁屏录制稳定性取决于设备厂商、电池策略和系统版本。
-- CameraX 的目标帧率是请求值，不代表所有设备都能严格输出相同帧率。
-- HDR、防抖、物理镜头和 H.265 等能力均依赖设备支持。
-- 外部记录仪目前仅支持艾尔优 DC1。
-- 项目暂未提供 Play Store 发布配置、Release 签名配置和正式发行包。
-- 最低系统版本为 API 36，旧版 Android 设备无法直接安装。
+- Lock-screen recording stability depends on the device manufacturer, battery policy, and system version.
+- CameraX target frame rates are requests and do not guarantee that every device will produce the exact requested frame rate.
+- HDR, stabilization, physical lens selection, and H.265 support depend on device capabilities.
+- Only the Aieryou DC1 external dash cam is currently supported.
+- The project does not yet include Play Store publishing configuration, release signing configuration, or an official release package.
+- The minimum supported system version is API 36, so older Android devices cannot install the app directly.
 
-## 路线图
+## Roadmap
 
-- 适配更多外部记录仪品牌和型号。
-- 增加更多 Android 设备兼容性验证。
-- 增加录制参数与实际视频元数据的对照诊断。
-- 优化横屏和车载场景下的界面体验。
-- 增加后台稳定性测试、Release 构建和自动化检查。
+- Support more external dash cam brands and models.
+- Validate compatibility on more Android devices.
+- Add diagnostics comparing requested recording parameters with actual video metadata.
+- Improve the interface for landscape and in-car use.
+- Add background stability tests, release builds, and automated checks.
 
-路线图代表当前方向，不构成发布时间承诺。欢迎通过 [Issues](https://github.com/xxxifan/DashCam/issues) 参与讨论。
+The roadmap represents the current direction and does not promise release dates. Discussions are welcome in [Issues](https://github.com/xxxifan/DashCam/issues).
 
-## 参与贡献
+## Contributing
 
-欢迎提交 issue 和 pull request。开始较大改动前，建议先创建 issue 说明需求和方案，避免重复工作。
+Issues and pull requests are welcome. For larger changes, consider opening an issue first to describe the requirement and proposed approach, which helps avoid duplicated work.
 
-反馈录制问题时，请尽量提供：
+When reporting recording problems, include as much of the following as possible:
 
-- 手机型号和 Android 版本。
-- 分辨率、帧率、编码、质量、HDR、防抖和裁剪倍率等录制设置。
-- 问题发生时是否锁屏、充电或明显发热。
-- 已移除敏感信息的相关诊断日志。
+- Phone model and Android version.
+- Recording settings, including resolution, frame rate, codec, quality, HDR, stabilization, and crop zoom.
+- Whether the screen was locked, the device was charging, or the device was noticeably hot when the problem occurred.
+- Relevant diagnostic logs with sensitive information removed.
 
-反馈外部记录仪问题时，请同时提供设备型号、固件版本、问题复现步骤和已脱敏的设备日志。
+When reporting external dash cam problems, also include the device model, firmware version, reproduction steps, and sanitized device logs.
 
-## 许可证
+## License
 
-本项目基于 [Apache License 2.0](LICENSE) 开源。
+This project is licensed under the [Apache License 2.0](LICENSE).
