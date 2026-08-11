@@ -2,8 +2,10 @@ package com.xxxifan.dashcam.update
 
 import android.app.DownloadManager
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.provider.Settings
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
@@ -23,6 +25,29 @@ data class ReleaseAsset(
     val name: String,
     val downloadUrl: String,
     val sizeBytes: Long,
+)
+
+data class UpdateDownloadRecord(
+    val id: Long,
+    val tagName: String,
+    val fileName: String,
+    val expectedSizeBytes: Long,
+)
+
+enum class UpdateDownloadState {
+    Pending,
+    Running,
+    Paused,
+    Successful,
+    Failed,
+    Missing,
+}
+
+data class UpdateDownloadStatus(
+    val state: UpdateDownloadState,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val message: String? = null,
 )
 
 sealed interface UpdateCheckResult {
@@ -72,7 +97,7 @@ class AppUpdateManager(
         }
     }
 
-    fun download(release: AppRelease): Long {
+    fun download(release: AppRelease): UpdateDownloadRecord {
         val asset = requireNotNull(release.apk) { "此版本没有可下载的 APK" }
         require(isTrustedGitHubUrl(asset.downloadUrl)) { "APK 下载地址不受信任" }
         val downloadManager = requireNotNull(
@@ -87,8 +112,108 @@ class AppUpdateManager(
             .setMimeType(APK_MIME_TYPE)
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setAllowedOverMetered(true)
-            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, fileName)
-        return downloadManager.enqueue(request)
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+        val record = UpdateDownloadRecord(
+            id = downloadManager.enqueue(request),
+            tagName = release.tagName,
+            fileName = fileName,
+            expectedSizeBytes = asset.sizeBytes,
+        )
+        saveDownload(record)
+        return record
+    }
+
+    fun savedDownload(): UpdateDownloadRecord? {
+        val id = preferences.getLong(PREF_DOWNLOAD_ID, -1L)
+        if (id < 0L) return null
+        val tagName = preferences.getString(PREF_TAG_NAME, null) ?: return null
+        val fileName = preferences.getString(PREF_FILE_NAME, null) ?: return null
+        return UpdateDownloadRecord(
+            id = id,
+            tagName = tagName,
+            fileName = fileName,
+            expectedSizeBytes = preferences.getLong(PREF_EXPECTED_SIZE, 0L),
+        )
+    }
+
+    fun queryDownload(record: UpdateDownloadRecord): UpdateDownloadStatus {
+        val downloadManager = downloadManager()
+        downloadManager.query(DownloadManager.Query().setFilterById(record.id)).use { cursor ->
+            if (!cursor.moveToFirst()) {
+                return UpdateDownloadStatus(
+                    state = UpdateDownloadState.Missing,
+                    message = "系统中没有找到这次下载记录",
+                )
+            }
+            val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+            val downloadedBytes = cursor.getLong(
+                cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR),
+            ).coerceAtLeast(0L)
+            val totalBytes = cursor.getLong(
+                cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES),
+            ).takeIf { it > 0L } ?: record.expectedSizeBytes
+            val reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+            return UpdateDownloadStatus(
+                state = when (status) {
+                    DownloadManager.STATUS_PENDING -> UpdateDownloadState.Pending
+                    DownloadManager.STATUS_RUNNING -> UpdateDownloadState.Running
+                    DownloadManager.STATUS_PAUSED -> UpdateDownloadState.Paused
+                    DownloadManager.STATUS_SUCCESSFUL -> UpdateDownloadState.Successful
+                    DownloadManager.STATUS_FAILED -> UpdateDownloadState.Failed
+                    else -> UpdateDownloadState.Missing
+                },
+                downloadedBytes = downloadedBytes,
+                totalBytes = totalBytes,
+                message = when (status) {
+                    DownloadManager.STATUS_PAUSED -> "下载已暂停，系统会自动重试"
+                    DownloadManager.STATUS_FAILED -> downloadFailureMessage(reason)
+                    else -> null
+                },
+            )
+        }
+    }
+
+    fun canRequestPackageInstalls(): Boolean = context.packageManager.canRequestPackageInstalls()
+
+    fun installationPermissionIntent(): Intent = Intent(
+        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+        Uri.parse("package:${context.packageName}"),
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    fun installationIntent(record: UpdateDownloadRecord): Intent {
+        check(canRequestPackageInstalls()) { "尚未允许此应用安装更新" }
+        val uri = requireNotNull(downloadManager().getUriForDownloadedFile(record.id)) {
+            "找不到已下载的安装包"
+        }
+        return Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, APK_MIME_TYPE)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+
+    fun removeDownload(record: UpdateDownloadRecord) {
+        downloadManager().remove(record.id)
+        clearSavedDownload()
+    }
+
+    fun clearSavedDownload() {
+        preferences.edit().clear().apply()
+    }
+
+    private fun downloadManager(): DownloadManager = requireNotNull(
+        context.getSystemService(DownloadManager::class.java),
+    ) { "系统下载服务不可用" }
+
+    private fun saveDownload(record: UpdateDownloadRecord) {
+        preferences.edit()
+            .putLong(PREF_DOWNLOAD_ID, record.id)
+            .putString(PREF_TAG_NAME, record.tagName)
+            .putString(PREF_FILE_NAME, record.fileName)
+            .putLong(PREF_EXPECTED_SIZE, record.expectedSizeBytes)
+            .apply()
+    }
+
+    private val preferences by lazy {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
     companion object {
@@ -97,8 +222,25 @@ class AppUpdateManager(
         private const val MAX_RESPONSE_CHARS = 1_000_000
         private const val MAX_NOTES_CHARS = 1_200
         private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
+        private const val PREFS_NAME = "app_update_download"
+        private const val PREF_DOWNLOAD_ID = "download_id"
+        private const val PREF_TAG_NAME = "tag_name"
+        private const val PREF_FILE_NAME = "file_name"
+        private const val PREF_EXPECTED_SIZE = "expected_size"
         private val REPOSITORY_PATTERN = Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
         private val UNSAFE_FILE_NAME_CHARS = Regex("[^A-Za-z0-9._-]")
+
+        private fun downloadFailureMessage(reason: Int): String = when (reason) {
+            DownloadManager.ERROR_INSUFFICIENT_SPACE -> "下载失败：存储空间不足"
+            DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "下载失败：下载目录中已有同名文件"
+            DownloadManager.ERROR_DEVICE_NOT_FOUND -> "下载失败：下载目录不可用"
+            DownloadManager.ERROR_CANNOT_RESUME -> "下载失败：无法继续未完成的下载"
+            DownloadManager.ERROR_HTTP_DATA_ERROR,
+            DownloadManager.ERROR_TOO_MANY_REDIRECTS,
+            DownloadManager.ERROR_UNHANDLED_HTTP_CODE,
+            -> "下载失败：网络响应异常"
+            else -> "下载失败，请检查网络后重试（$reason）"
+        }
 
         internal fun parseRelease(json: String): AppRelease {
             val root = JSONObject(json)

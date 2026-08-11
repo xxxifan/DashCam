@@ -184,6 +184,7 @@ import com.xxxifan.dashcam.storage.LoopStorageManager
 import com.xxxifan.dashcam.storage.RecordingStorageEstimate
 import com.xxxifan.dashcam.storage.RecordingStorageEstimator
 import com.xxxifan.dashcam.update.AppUpdateSection
+import com.xxxifan.dashcam.update.AutomaticUpdatePrompt
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
@@ -536,6 +537,10 @@ private fun DashCamApp(
                 },
             )
         }
+
+        AutomaticUpdatePrompt(
+            enabled = !showConfirm && !showBatteryOptimizationPrompt && !showBackConfirmDialog,
+        )
 
         val activePlaybackEntry = playbackEntry
         val shareRecording: (RecordingEntry) -> Unit = { entry ->
