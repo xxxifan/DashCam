@@ -145,12 +145,42 @@ data class DeviceDownloadProgress(
     val fileName: String,
     val downloadedBytes: Long,
     val totalBytes: Long?,
+    val stage: DeviceSaveStage = DeviceSaveStage.Downloading,
+    val overallFraction: Float? = null,
 ) {
-    val fraction: Float?
+    val sourceFraction: Float?
         get() = totalBytes
             ?.takeIf { it > 0L }
             ?.let { (downloadedBytes.toDouble() / it.toDouble()).toFloat().coerceIn(0f, 1f) }
+
+    val fraction: Float?
+        get() = overallFraction ?: sourceFraction
 }
+
+enum class DeviceSaveStage {
+    Downloading,
+    Converting,
+    Publishing,
+}
+
+internal fun downloadOverallFraction(
+    sourceFraction: Float?,
+    convertToMp4: Boolean,
+): Float? = sourceFraction?.let { fraction ->
+    fraction.coerceIn(0f, 1f) * if (convertToMp4) {
+        DOWNLOAD_PROGRESS_WEIGHT
+    } else {
+        1f
+    }
+}
+
+internal fun conversionOverallFraction(conversionFraction: Float?): Float? =
+    conversionFraction?.let { fraction ->
+        DOWNLOAD_PROGRESS_WEIGHT + fraction.coerceIn(0f, 1f) * CONVERSION_PROGRESS_WEIGHT
+    }
+
+private const val DOWNLOAD_PROGRESS_WEIGHT = 0.9f
+private const val CONVERSION_PROGRESS_WEIGHT = 0.1f
 
 enum class DeviceDownloadOption {
     OriginalOnly,

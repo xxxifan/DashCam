@@ -204,11 +204,14 @@ fun DeviceScreen(
             media = media,
             mediaList = state.remoteMedia,
             isSaving = state.isBusy,
+            saveProgress = state.downloadProgress,
+            savedMedia = state.downloadedMedia,
             onPrevious = { previous -> manager.play(previous) },
             onNext = { next -> manager.play(next) },
             onSave = { selected, option ->
                 scope.launch { manager.download(selected, option) }
             },
+            onDismissSavedMedia = manager::dismissDownloadedMedia,
             onDismiss = { scope.launch { manager.stopPlayer() } },
             onError = { source, error -> manager.reportPlaybackError(source, error) },
             onDiagnostic = { source, event, fields ->
@@ -217,6 +220,12 @@ fun DeviceScreen(
         )
         return
     }
+
+    DeviceSaveStatusDialog(
+        progress = state.downloadProgress,
+        savedMedia = state.downloadedMedia,
+        onDismissCompleted = manager::dismissDownloadedMedia,
+    )
 
     if (state.activeDevice == null || showDevicePicker) {
         passwordDevice?.let { device ->
@@ -305,16 +314,18 @@ internal fun RemoteVideoPlaybackScreen(
     media: RemoteDeviceMedia,
     mediaList: List<RemoteDeviceMedia>,
     isSaving: Boolean,
+    saveProgress: DeviceDownloadProgress?,
+    savedMedia: SavedDeviceMedia?,
     onPrevious: (RemoteDeviceMedia) -> Unit,
     onNext: (RemoteDeviceMedia) -> Unit,
     onSave: (RemoteDeviceMedia, DeviceDownloadOption) -> Unit,
+    onDismissSavedMedia: () -> Unit,
     onDismiss: () -> Unit,
     onError: (DevicePlaybackSource, Throwable) -> Unit,
     onDiagnostic: (DevicePlaybackSource, String, Map<String, Any?>) -> Unit,
 ) {
     val context = LocalContext.current
     val activity = context.findActivity()
-    var isLandscape by remember(media.id) { mutableStateOf<Boolean?>(null) }
     var showSaveOptions by remember(media.id) { mutableStateOf(false) }
     val playableMedia = remember(mediaList) {
         mediaList.filter { it.format != RemoteMediaFormat.Jpeg }
@@ -334,11 +345,17 @@ internal fun RemoteVideoPlaybackScreen(
         )
     }
 
+    DeviceSaveStatusDialog(
+        progress = saveProgress,
+        savedMedia = savedMedia,
+        onDismissCompleted = onDismissSavedMedia,
+    )
+
     BackHandler(onBack = onDismiss)
-    DisposableEffect(activity, isLandscape) {
+    DisposableEffect(activity) {
         val previousOrientation = activity?.requestedOrientation
-        if (activity != null && isLandscape == true) {
-            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        if (activity != null) {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
         onDispose {
             if (activity != null && previousOrientation != null) {
@@ -362,11 +379,6 @@ internal fun RemoteVideoPlaybackScreen(
                 onError = { onError(media.playbackSource, it) },
                 onDiagnostic = { event, fields ->
                     onDiagnostic(media.playbackSource, event, fields)
-                },
-                onVideoSizeChanged = { width, height ->
-                    if (width > 0 && height > 0) {
-                        isLandscape = width > height
-                    }
                 },
                 showNavigationControls = false,
                 modifier = Modifier.fillMaxSize(),
@@ -925,7 +937,6 @@ private fun DeviceFilesPage(
         itemsIndexed(state.remoteMedia, key = { _, media -> media.id }) { _, media ->
             RemoteMediaItem(
                 media = media,
-                progress = state.downloadProgress?.takeIf { it.mediaId == media.id },
                 enabled = !state.isBusy,
                 expanded = expandedMediaId == media.id,
                 manager = manager,
@@ -944,19 +955,6 @@ private fun DeviceFilesPage(
                     }
                 },
             )
-        }
-        state.downloadedMedia?.let { downloaded ->
-            item {
-                Text(
-                    if (downloaded.convertedToMp4) {
-                        "已转换并保存 ${downloaded.fileName}"
-                    } else {
-                        "已保存 ${downloaded.fileName}"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF15803D),
-                )
-            }
         }
     }
 }
@@ -990,6 +988,76 @@ private fun SaveRemoteMediaDialog(
             }
         },
     )
+}
+
+@Composable
+private fun DeviceSaveStatusDialog(
+    progress: DeviceDownloadProgress?,
+    savedMedia: SavedDeviceMedia?,
+    onDismissCompleted: () -> Unit,
+) {
+    when {
+        progress != null -> {
+            val fraction = progress.fraction
+            AlertDialog(
+                onDismissRequest = {},
+                title = { Text("正在保存视频") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            progress.fileName,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            when (progress.stage) {
+                                DeviceSaveStage.Downloading -> progress.totalBytes?.let { totalBytes ->
+                                    "正在下载 ${progress.downloadedBytes.formatBytes()} / ${totalBytes.formatBytes()}"
+                                } ?: "正在下载视频…"
+
+                                DeviceSaveStage.Converting -> "正在转换 MP4…"
+                                DeviceSaveStage.Publishing -> "正在保存到系统相册…"
+                            },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (fraction != null) {
+                            LinearProgressIndicator(
+                                progress = { fraction },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Text(
+                                "${(fraction * 100).toInt().coerceIn(0, 100)}%",
+                                modifier = Modifier.align(Alignment.End),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                },
+                confirmButton = {},
+            )
+        }
+
+        savedMedia != null -> AlertDialog(
+            onDismissRequest = onDismissCompleted,
+            icon = { Icon(Icons.Filled.CheckCircle, contentDescription = null) },
+            title = { Text("保存完成") },
+            text = {
+                Text(
+                    if (savedMedia.convertedToMp4) {
+                        "已转换并保存 ${savedMedia.fileName}\n\n位置：${savedMedia.publicRelativePath}"
+                    } else {
+                        "已保存 ${savedMedia.fileName}\n\n位置：${savedMedia.publicRelativePath}"
+                    },
+                )
+            },
+            confirmButton = {
+                Button(onClick = onDismissCompleted) { Text("知道了") }
+            },
+        )
+    }
 }
 
 @Composable
@@ -1046,7 +1114,6 @@ private fun DeviceMediaTimeline(
 @Composable
 private fun RemoteMediaItem(
     media: RemoteDeviceMedia,
-    progress: DeviceDownloadProgress?,
     enabled: Boolean,
     expanded: Boolean,
     manager: DeviceManager,
@@ -1110,11 +1177,6 @@ private fun RemoteMediaItem(
                     manager = manager,
                     onPlay = onPlay.takeIf { media.format != RemoteMediaFormat.Jpeg },
                 )
-            }
-            progress?.let {
-                it.fraction?.let { fraction ->
-                    LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
-                } ?: LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
         }
     }

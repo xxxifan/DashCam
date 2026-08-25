@@ -588,11 +588,14 @@ private fun DashCamApp(
                 media = media,
                 mediaList = remoteDeviceState.remoteMedia,
                 isSaving = remoteDeviceState.isBusy,
+                saveProgress = remoteDeviceState.downloadProgress,
+                savedMedia = remoteDeviceState.downloadedMedia,
                 onPrevious = { previous -> deviceManager.play(previous) },
                 onNext = { next -> deviceManager.play(next) },
                 onSave = { selected, option ->
                     appScope.launch { deviceManager.download(selected, option) }
                 },
+                onDismissSavedMedia = deviceManager::dismissDownloadedMedia,
                 onDismiss = { appScope.launch { deviceManager.stopPlayer() } },
                 onError = { source, error -> deviceManager.reportPlaybackError(source, error) },
                 onDiagnostic = { source, event, fields ->

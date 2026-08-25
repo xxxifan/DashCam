@@ -12,13 +12,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Environment
 import android.provider.MediaStore
-import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
-import androidx.media3.transformer.Composition
-import androidx.media3.transformer.EditedMediaItem
-import androidx.media3.transformer.ExportException
-import androidx.media3.transformer.ExportResult
-import androidx.media3.transformer.Transformer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,13 +27,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URL
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 class DeviceManager private constructor(
     context: Context,
@@ -58,6 +49,7 @@ class DeviceManager private constructor(
     private val sessionMutex = Mutex()
     private val thumbnailMutex = Mutex()
     private val mediaCache = DeviceMediaSessionCache()
+    private val tsToMp4Remuxer = TsToMp4Remuxer()
     private val mediaCacheGeneration = AtomicLong(0L)
     private var activeSession: DeviceSession? = null
     private var activeRoute: DeviceNetworkRoute? = null
@@ -484,24 +476,50 @@ class DeviceManager private constructor(
         option: DeviceDownloadOption = DeviceDownloadOption.OriginalOnly,
     ) =
         runSessionOperation("正在下载 ${media.name}…") { session ->
+            val convertToMp4 =
+                media.format == RemoteMediaFormat.TransportStream &&
+                    option == DeviceDownloadOption.ConvertToMp4
+            _state.update {
+                it.copy(
+                    downloadedMedia = null,
+                    downloadProgress = DeviceDownloadProgress(
+                        mediaId = media.id,
+                        fileName = media.name,
+                        downloadedBytes = 0L,
+                        totalBytes = media.sizeBytes,
+                        stage = DeviceSaveStage.Downloading,
+                        overallFraction = 0f.takeIf { media.sizeBytes != null },
+                    ),
+                )
+            }
             val destination = File(
                 appContext.cacheDir,
                 "device_downloads/${session.device.id}",
             )
             val result = session.download(media, destination) { progress ->
-                _state.update { it.copy(downloadProgress = progress) }
+                _state.update {
+                    it.copy(
+                        downloadProgress = progress.copy(
+                            stage = DeviceSaveStage.Downloading,
+                            overallFraction = downloadOverallFraction(
+                                progress.sourceFraction,
+                                convertToMp4,
+                            ),
+                        ),
+                    )
+                }
             }
             var convertedFile: File? = null
             try {
-                val convertToMp4 =
-                    result.outputFormat == RemoteMediaFormat.TransportStream &&
-                        option == DeviceDownloadOption.ConvertToMp4
                 val publishedFile: File
                 val publishedFormat: RemoteMediaFormat
-                if (convertToMp4) {
+                if (convertToMp4 && result.outputFormat == RemoteMediaFormat.TransportStream) {
                     _state.update {
                         it.copy(
-                            downloadProgress = null,
+                            downloadProgress = it.downloadProgress?.copy(
+                                stage = DeviceSaveStage.Converting,
+                                overallFraction = conversionOverallFraction(0f),
+                            ),
                             statusMessage = "TS 下载完成，正在转换 MP4…",
                         )
                     }
@@ -509,12 +527,48 @@ class DeviceManager private constructor(
                         result.file.parentFile,
                         "${result.file.nameWithoutExtension}.mp4",
                     ).also { it.delete() }
-                    remuxToMp4(result.file, convertedFile)
+                    val remuxedMediaInfo = withContext(Dispatchers.IO) {
+                        tsToMp4Remuxer.remux(
+                            source = result.file,
+                            output = convertedFile,
+                            expectedDurationMillis = media.durationMillis,
+                        ) { conversionFraction ->
+                            _state.update {
+                                it.copy(
+                                    downloadProgress = it.downloadProgress?.copy(
+                                        stage = DeviceSaveStage.Converting,
+                                        overallFraction = conversionOverallFraction(conversionFraction),
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                    diagnostics.log(
+                        "device_media_remux_completed",
+                        mapOf(
+                            "deviceId" to session.device.id,
+                            "sourceFile" to result.file.name,
+                            "outputFile" to convertedFile.name,
+                            "videoMimeType" to remuxedMediaInfo.videoMimeType,
+                            "audioMimeType" to remuxedMediaInfo.audioMimeType,
+                            "ignoredTrackCount" to remuxedMediaInfo.ignoredTrackCount,
+                            "durationMillis" to remuxedMediaInfo.durationMillis,
+                        ),
+                    )
                     publishedFile = convertedFile
                     publishedFormat = RemoteMediaFormat.Mp4
                 } else {
                     publishedFile = result.file
                     publishedFormat = result.outputFormat
+                }
+                _state.update {
+                    it.copy(
+                        downloadProgress = it.downloadProgress?.copy(
+                            stage = DeviceSaveStage.Publishing,
+                            overallFraction = 1f,
+                        ),
+                        statusMessage = "正在保存到系统相册…",
+                    )
                 }
                 val publicUri = publishDownload(publishedFile, publishedFormat)
                 _state.update {
@@ -524,14 +578,14 @@ class DeviceManager private constructor(
                             source = result.source,
                             outputFormat = publishedFormat,
                             publicUri = publicUri,
-                            publicRelativePath = "Downloads/DashCam/${publishedFile.name}",
+                            publicRelativePath = "Download/DashCam/${publishedFile.name}",
                             fileName = publishedFile.name,
                             convertedToMp4 = convertToMp4,
                         ),
                         statusMessage = if (convertToMp4) {
-                            "已转换并保存 MP4 到 Downloads/DashCam"
+                            "已转换并保存 MP4 到 Download/DashCam"
                         } else {
-                            "已保存到 Downloads/DashCam"
+                            "已保存到 Download/DashCam"
                         },
                     )
                 }
@@ -559,6 +613,10 @@ class DeviceManager private constructor(
                 ),
             )
         }
+    }
+
+    fun dismissDownloadedMedia() {
+        _state.update { it.copy(downloadedMedia = null) }
     }
 
     fun reportPlaybackDiagnostic(
@@ -617,44 +675,6 @@ class DeviceManager private constructor(
         }
     }
 
-    private suspend fun remuxToMp4(source: File, output: File) =
-        withContext(Dispatchers.Main.immediate) {
-            suspendCancellableCoroutine { continuation ->
-                val transformer = Transformer.Builder(appContext)
-                    .addListener(
-                        object : Transformer.Listener {
-                            override fun onCompleted(
-                                composition: Composition,
-                                exportResult: ExportResult,
-                            ) {
-                                if (continuation.isActive) {
-                                    continuation.resume(Unit)
-                                }
-                            }
-
-                            override fun onError(
-                                composition: Composition,
-                                exportResult: ExportResult,
-                                exportException: ExportException,
-                            ) {
-                                if (continuation.isActive) {
-                                    continuation.resumeWithException(exportException)
-                                }
-                            }
-                        },
-                    )
-                    .build()
-                continuation.invokeOnCancellation {
-                    transformer.cancel()
-                    output.delete()
-                }
-                transformer.start(
-                    EditedMediaItem.Builder(MediaItem.fromUri(android.net.Uri.fromFile(source))).build(),
-                    output.absolutePath,
-                )
-            }
-        }
-
     suspend fun closeActive() {
         sessionMutex.withLock {
             closeActiveSessionLocked()
@@ -689,6 +709,7 @@ class DeviceManager private constructor(
             _state.update { it.copy(isBusy = true, statusMessage = message) }
             runCatching { operation(session) }
                 .onFailure { error ->
+                    _state.update { it.copy(downloadProgress = null) }
                     setOperationError(error.message ?: error.javaClass.simpleName)
                     diagnostics.log(
                         "device_operation_failed",
