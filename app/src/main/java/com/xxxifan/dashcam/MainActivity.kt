@@ -24,6 +24,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -1012,6 +1013,15 @@ private fun CameraPreviewCard(
     val lifecycleOwner = LocalLifecycleOwner.current
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
     var previewReady by remember { mutableStateOf(!isRecording) }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            onEnablePreview()
+        } else {
+            Toast.makeText(context, "开启预览需要相机权限", Toast.LENGTH_LONG).show()
+        }
+    }
     val previewExpansion = remember {
         Animatable(if (isRecording) 0f else 1f)
     }
@@ -1087,7 +1097,17 @@ private fun CameraPreviewCard(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Button(onClick = onEnablePreview) {
+                    Button(onClick = {
+                        if (ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.CAMERA,
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            onEnablePreview()
+                        } else {
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    }) {
                         Text("开启预览")
                     }
                 }
