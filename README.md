@@ -1,219 +1,88 @@
-# DashCam
+<h1 align="center">DashCam</h1>
 
-**EN** | [CN](README_CN.md)
+<p align="center">
+  <img src="docs/images/icon.svg" width="96" height="96" alt="DashCam app icon">
+</p>
 
-[![Android](https://img.shields.io/badge/Android-API%2036%2B-3DDC84?logo=android&logoColor=white)](https://developer.android.com/)
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.3.10-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+<p align="center">Turn your Android phone into a dash cam.</p>
 
-DashCam is an open-source app that turns an Android phone into a dashboard camera. Built with CameraX, it provides segmented recording, loop storage, automatic quality selection, safety-based quality reduction, local video management, and access to external dash cams.
+<p align="center">
+  <strong>English</strong> · <a href="README_CN.md">简体中文</a>
+</p>
 
-> [!IMPORTANT]
-> This project is currently at an early experimental stage and is intended primarily for personal use, learning, and further development. Restrictions on background camera access, lock-screen recording, encoders, and thermal management vary significantly between manufacturers. Test the app thoroughly on your target device before using it while driving.
+<p align="center">
+  <a href="https://developer.android.com/"><img src="https://img.shields.io/badge/Android-16%2B-3DDC84?logo=android&logoColor=white" alt="Android 16+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="Apache 2.0 license"></a>
+  <a href="https://github.com/xxxifan/DashCam/stargazers"><img src="https://img.shields.io/github/stars/xxxifan/DashCam?style=flat" alt="GitHub stars"></a>
+  <a href="https://github.com/xxxifan/DashCam/fork"><img src="https://img.shields.io/github/forks/xxxifan/DashCam?style=flat" alt="GitHub forks"></a>
+</p>
 
-## Features
+<p align="center">
+  <a href="https://github.com/xxxifan/DashCam/releases">Releases</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="https://github.com/xxxifan/DashCam/issues">Feedback</a> ·
+  <a href="#contributing">Contribute</a>
+</p>
 
-### Dash cam recording
+## About
 
-- Records continuously through a foreground service with a persistent notification.
-- Saves recordings in 1, 2, 3, 5, or 10-minute segments.
-- Automatically removes the oldest segments when the storage quota or safe free-space threshold is reached.
-- Supports the main rear and ultra-wide cameras, with 1.0x to 2.0x center-crop zoom.
-- Supports 720p, 1080p, and 4K; 24, 30, and 60 fps; and H.264 or H.265, depending on device capabilities.
-- Supports HDR, video stabilization, optional audio, and space-saving, standard, or high-quality presets.
-- Automatic quality selection can adjust resolution, frame rate, codec, quality, HDR, and stabilization based on device capabilities and available space.
+DashCam is an open-source Android dash cam app for recording with your phone and accessing footage from an external dash cam. It combines CameraX recording, automatic segmentation, loop storage, and local video management, with quality adjustments based on device capabilities and available resources.
 
-### Safety and post-processing
+## Preview
 
-- Automatically removes old recordings or reduces quality when storage is low.
-- Monitors device temperature, battery level, and recording pipeline health, then warns, reduces quality, or stops recording when necessary.
-- Reserves 10% of system storage by default.
-- Analyzes audio after recording and applies noise reduction only for clearly detected low-frequency wind noise, resonance, and high-frequency broadband noise.
-- Noise reduction runs only while the app is visible, the screen is on, and no recording or playback is active. A processing failure never overwrites the original video.
+| Recording preview | Lens settings | Video quality |
+| :---: | :---: | :---: |
+| <img src="docs/images/recording.png" width="250" alt="Recording home screen with a scenic road preview"> | <img src="docs/images/settings-lens.png" width="250" alt="Lens, focus, and crop zoom settings"> | <img src="docs/images/settings-quality.png" width="250" alt="Resolution, frame rate, codec, and segment settings"> |
 
-### Video management
+<sub>Captured on a Pixel 10a. Only the camera preview was replaced with an AI-generated landscape for illustration.</sub>
 
-- Browse, play, and continuously play local recordings.
-- Delete individual videos or clean up recordings in batches by age.
-- Export videos to `Movies/DashCam` in the system media library.
-- Share videos through the Android system share sheet.
+## Main features
 
-### External dash cams
+- **Record in a loop** — continuous foreground recording, 1–10 minute segments, and automatic cleanup of old footage.
+- **Flexible video settings** — 720p / 1080p / 4K, 24 / 30 / 60 fps, H.264 / H.265, HDR, stabilization, lens selection, focus, and crop zoom, depending on your device.
+- **Automatic quality and safety** — select quality based on device capabilities and available space; monitor storage, temperature, battery, and recording health to reduce quality or stop when needed. Reserve 10% storage by default.
+- **Audio and noise reduction** — optional audio recording and post-recording noise reduction for detected wind noise and other supported noise types.
+- **Keep and share footage** — thumbnails, continuous playback, batch cleanup, export, and sharing.
+- **Connect a dash cam** — Aieryou DC1 live preview, remote playback, and resumable downloads, with optional TS-to-MP4 remuxing.
+- **Troubleshooting** — recording event logs and external device diagnostics help trace connection failures and unexpected recording stops.
 
-- Currently supports the **Aieryou DC1**.
-- Provides live preview, categorized remote recording lists, online playback, and resumable downloads.
-- Records and exports device connection and operation logs for troubleshooting.
-- Other brands and models are not yet supported and will be added gradually.
+Built with Kotlin, Jetpack Compose, CameraX, Media3, and MMKV.
 
 ## Quick start
 
-### Requirements
+**Requires Android 16+ and an ARM64 device.** Browse [Releases](https://github.com/xxxifan/DashCam/releases) for published builds, or build from source below.
 
-- Android Studio, or a working Android Gradle command-line environment.
-- JDK 17.
-- Android SDK 36.
-- An Android device running API 36 or later.
-- A physical device for validating camera, encoder, thermal, and lock-screen recording behavior.
+1. Open the app and grant camera, notification, and optional microphone permissions.
+2. Choose recording quality and storage settings, then tap **Start recording**.
+3. Browse your footage in **Videos**, or connect to the Aieryou DC1 Wi-Fi and open **Devices**.
 
-The current app version is `0.1.0`, with the following project configuration:
+Phone recordings stay in app-specific storage until exported. Export important footage before uninstalling. Lock-screen recording and advanced camera options vary by device; test your setup before a long drive.
 
-```kotlin
-compileSdk = 36
-minSdk = 36
-targetSdk = 36
-```
+<details>
+<summary><strong>Build from source</strong></summary>
 
-### Build
+Use Android Studio with JDK 17 and Android SDK 36. On Windows:
 
 ```powershell
 git clone https://github.com/xxxifan/DashCam.git
 cd DashCam
 .\gradlew.bat assembleDebug
-```
-
-The debug APK is generated at:
-
-```text
-app/build/outputs/apk/debug/app-debug.apk
-```
-
-Release builds require a private signing key and the four `DASHCAM_RELEASE_*` values in ignored local configuration or environment variables. Signing credentials must never be committed.
-
-### Install
-
-After connecting an Android device with USB debugging enabled, run:
-
-```powershell
 .\gradlew.bat installDebug
 ```
 
-You can also open the project in Android Studio and run the `app` module directly.
+Enable USB debugging before installation. The APK is at `app/build/outputs/apk/debug/app-debug.apk`.
 
-## Usage
+Release builds need your own signing key and the `DASHCAM_RELEASE_*` settings. See [app/build.gradle.kts](app/build.gradle.kts) for build configuration.
 
-### First recording
-
-1. Grant the required camera and notification permissions. Grant microphone permission only if audio recording is enabled.
-2. For an initial test, start with `1080p30 + H.265 + Standard`.
-3. Set a loop-recording quota based on available space, then record several complete segments to confirm device compatibility.
-4. Connect a car charger for long recordings and monitor the device temperature.
-
-If the camera's field of view is too wide, try 1.2x or 1.4x crop zoom. If recording becomes unstable after locking the screen, keep the app in the foreground or the screen on, and try reducing the frame rate or disabling HDR or enhanced stabilization.
-
-### Connect an external dash cam
-
-1. Connect to the Aieryou DC1 Wi-Fi network in Android system settings.
-2. Open the **Devices** tab in DashCam.
-3. Wait for the app to discover the device, then use live preview, remote playback, or download features.
-
-Only the Aieryou DC1 is currently supported. Other devices are not guaranteed to work even if they use a similar connection method.
-
-## File storage
-
-Videos recorded by the phone are stored in the app-specific external directory by default:
-
-```text
-Android/data/com.xxxifan.dashcam/files/Movies/DashCam/records
-```
-
-The `.nomedia` file in this directory prevents unexported videos from appearing automatically in the system gallery. Exported videos are copied to:
-
-```text
-Movies/DashCam
-```
-
-Files downloaded from an external dash cam are stored in:
-
-```text
-Downloads/DashCam
-```
-
-`Downloads/DashCam` is a public directory that can also be accessed by other apps with permission to read system downloads.
-
-When saving TS videos from a dash cam, you can keep the original TS file or losslessly remux it to MP4 for better system gallery compatibility. The conversion process writes only the MP4 file to the public directory and removes the temporary TS file from the app cache afterward.
-
-> [!WARNING]
-> Unexported recordings made by the phone remain in the app-specific directory and may be deleted when the app is uninstalled. Export recordings that need to be kept long-term.
-
-## Permissions
-
-| Permission | Purpose |
-| --- | --- |
-| Camera | Record video |
-| Microphone | Capture audio when audio recording is enabled |
-| Notifications | Display the persistent recording notification |
-| Foreground service | Keep the foreground service active while recording |
-| Wake lock | Help keep recording stable |
-| Network and Wi-Fi state | Discover and connect to external dash cams |
-| Internet | Preview, play, and download content from external dash cams |
-
-Some systems also restrict background activity, lock-screen camera access, or high-power workloads. Allow DashCam to run in the background and disable overly aggressive battery optimization for the app when necessary.
-
-## Technology stack
-
-- Kotlin
-- Jetpack Compose / Material 3
-- CameraX VideoCapture / Camera2Interop
-- Media3 ExoPlayer / RTSP / Transformer
-- MMKV
-- Kotlin Coroutines
-- Gradle Kotlin DSL
-
-## Project structure
-
-```text
-app/src/main/java/com/xxxifan/dashcam
-├── camera/       # Camera capabilities, lens selection, and preview binding
-├── data/         # Settings, recording metadata, thumbnails, and event logs
-├── device/       # Device information and external dash cam integration
-├── recording/    # Recording service, quality policy, audio post-processing, and recording state
-├── safety/       # Storage, temperature, battery, and recording pipeline safety policies
-├── storage/      # Loop-recording space estimation and cleanup
-└── MainActivity.kt
-```
-
-## Diagnostic logs
-
-The app writes recording event logs to its private directory to help diagnose device capabilities, recording parameters, segment results, storage cleanup, and abnormal stop reasons. Connection and operation logs for external dash cams are stored at:
-
-```text
-files/device_logs/device-events-YYYYMMDD.log
-```
-
-Logs are never uploaded automatically. Before attaching logs to an issue, check them for local file paths, device information, or anything else you do not want to disclose.
-
-## Known limitations
-
-- Lock-screen recording stability depends on the device manufacturer, battery policy, and system version.
-- CameraX target frame rates are requests and do not guarantee that every device will produce the exact requested frame rate.
-- HDR, stabilization, physical lens selection, and H.265 support depend on device capabilities.
-- Only the Aieryou DC1 external dash cam is currently supported.
-- The release build enables R8 code minification and resource shrinking. Play Store publishing configuration is not included.
-- The minimum supported system version is API 36, so older Android devices cannot install the app directly.
-
-## Roadmap
-
-- Support more external dash cam brands and models.
-- Validate compatibility on more Android devices.
-- Add diagnostics comparing requested recording parameters with actual video metadata.
-- Improve the interface for landscape and in-car use.
-- Add background stability tests, release builds, and automated checks.
-
-The roadmap represents the current direction and does not promise release dates. Discussions are welcome in [Issues](https://github.com/xxxifan/DashCam/issues).
+</details>
 
 ## Contributing
 
-Issues and pull requests are welcome. For larger changes, consider opening an issue first to describe the requirement and proposed approach, which helps avoid duplicated work.
+**Stars and Forks are welcome!** Star the project to show your support, or [Fork it](https://github.com/xxxifan/DashCam/fork) and make it your own. Bug fixes, docs, and device compatibility feedback are all appreciated.
 
-When reporting recording problems, include as much of the following as possible:
-
-- Phone model and Android version.
-- Recording settings, including resolution, frame rate, codec, quality, HDR, stabilization, and crop zoom.
-- Whether the screen was locked, the device was charging, or the device was noticeably hot when the problem occurred.
-- Relevant diagnostic logs with sensitive information removed.
-
-When reporting external dash cam problems, also include the device model, firmware version, reproduction steps, and sanitized device logs.
+- **Found a bug?** [Open an issue](https://github.com/xxxifan/DashCam/issues) with your device, Android version, and steps to reproduce. Include recording settings or dash cam firmware when relevant.
+- **Have an improvement?** Submit a pull request with a short description and test results. Discuss larger changes in an issue first.
 
 ## License
 
-This project is licensed under the [Apache License 2.0](LICENSE).
+[Apache License 2.0](LICENSE)
